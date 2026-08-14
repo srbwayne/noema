@@ -16,6 +16,12 @@ def test_epistemic_source_is_valid() -> None:
     assert source.source_ref == "tool:git-status:request-123"
 
 
+@pytest.mark.parametrize("source_type", ["tool", 1, None])
+def test_epistemic_source_rejects_invalid_source_type(source_type: object) -> None:
+    with pytest.raises(InvalidEpistemicSourceError, match="source_type"):
+        EpistemicSource(source_type=source_type, source_ref="source:reference")  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("source_ref", ["", "   ", "\t\n"])
 def test_epistemic_source_rejects_empty_reference(source_ref: str) -> None:
     with pytest.raises(InvalidEpistemicSourceError, match="source_ref"):

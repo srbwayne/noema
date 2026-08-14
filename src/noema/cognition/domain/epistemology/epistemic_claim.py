@@ -30,6 +30,10 @@ class EpistemicClaim:
 
     def __post_init__(self) -> None:
         """Validate claim content, confidence, references, conflicts, and time."""
+        if not isinstance(self.status, EpistemicStatus):
+            raise InvalidEpistemicClaimError("status must be an EpistemicStatus")
+        if not isinstance(self.source, EpistemicSource):
+            raise InvalidEpistemicClaimError("source must be an EpistemicSource")
         if not isinstance(self.statement, str) or not self.statement.strip():
             raise InvalidEpistemicClaimError("statement must not be empty")
         if (

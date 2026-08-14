@@ -14,6 +14,8 @@ class EpistemicSource:
     source_ref: str
 
     def __post_init__(self) -> None:
-        """Require a non-empty opaque source reference."""
+        """Require an explicit source type and non-empty opaque reference."""
+        if not isinstance(self.source_type, EpistemicSourceType):
+            raise InvalidEpistemicSourceError("source_type must be an EpistemicSourceType")
         if not isinstance(self.source_ref, str) or not self.source_ref.strip():
             raise InvalidEpistemicSourceError("source_ref must not be empty")

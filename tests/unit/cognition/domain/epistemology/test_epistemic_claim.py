@@ -81,6 +81,28 @@ def test_epistemic_claim_is_valid_and_receives_automatic_distinct_id() -> None:
     assert first.status is EpistemicStatus.OBSERVATION
 
 
+@pytest.mark.parametrize("status", ["FACT", None])
+def test_epistemic_claim_rejects_invalid_status(status: object) -> None:
+    with pytest.raises(InvalidEpistemicClaimError, match="status"):
+        EpistemicClaim(
+            statement="A claim",
+            status=status,  # type: ignore[arg-type]
+            confidence=0.5,
+            source=source(),
+        )
+
+
+@pytest.mark.parametrize("claim_source", ["model", None])
+def test_epistemic_claim_rejects_invalid_source(claim_source: object) -> None:
+    with pytest.raises(InvalidEpistemicClaimError, match="source"):
+        EpistemicClaim(
+            statement="A claim",
+            status=EpistemicStatus.HYPOTHESIS,
+            confidence=0.5,
+            source=claim_source,  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.parametrize("statement", ["", "   ", "\t\n"])
 def test_epistemic_claim_rejects_empty_statement(statement: str) -> None:
     with pytest.raises(InvalidEpistemicClaimError, match="statement"):
