@@ -5,6 +5,9 @@ from noema.cognition.domain.errors.attention_errors import (
     InvalidAttentionPolicyError,
     InvalidAttentionWeightsError,
 )
+from noema.cognition.domain.errors.cognitive_budget_errors import (
+    InvalidCognitiveBudgetError,
+)
 from noema.cognition.domain.errors.context_errors import InvalidContextVersionError
 from noema.cognition.domain.errors.epistemic_errors import (
     DuplicateEpistemicClaimError,
@@ -46,6 +49,7 @@ __all__ = [
     "InvalidAttentionFactorError",
     "InvalidAttentionPolicyError",
     "InvalidAttentionWeightsError",
+    "InvalidCognitiveBudgetError",
     "InvalidCognitiveItemError",
     "InvalidContextVersionError",
     "InvalidEpistemicClaimError",

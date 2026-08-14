@@ -152,3 +152,43 @@ def test_epistemology_has_only_allowed_noema_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_budget_has_only_allowed_noema_dependencies() -> None:
+    budget_domain = SOURCE_ROOT / "cognition" / "domain" / "budget"
+    allowed_prefixes = (
+        "noema.cognition.domain.budget",
+        "noema.cognition.domain.errors",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(budget_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
+def test_modes_has_only_allowed_noema_dependencies() -> None:
+    modes_domain = SOURCE_ROOT / "cognition" / "domain" / "modes"
+    allowed_prefixes = (
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.modes",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(modes_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
