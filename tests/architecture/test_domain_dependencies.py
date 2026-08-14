@@ -1,0 +1,134 @@
+import ast
+from pathlib import Path
+
+import pytest
+
+PROJECT_ROOT = Path(__file__).parents[2]
+SOURCE_ROOT = PROJECT_ROOT / "src" / "noema"
+PROHIBITED_IMPORTS = frozenset(
+    {
+        "anthropic",
+        "autogen",
+        "crewai",
+        "fastapi",
+        "httpx",
+        "langchain",
+        "langgraph",
+        "openai",
+        "pydantic",
+        "qdrant_client",
+        "requests",
+        "sqlalchemy",
+    }
+)
+
+
+def imported_modules(path: Path) -> list[tuple[str, int]]:
+    """Return imported module names and their source lines."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend((alias.name, node.lineno) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.append((node.module, node.lineno))
+    return imports
+
+
+def prohibited_domain_imports(source_root: Path) -> list[str]:
+    """Return prohibited imports found below any domain package."""
+    violations: list[str] = []
+    for path in sorted(source_root.glob("**/domain/**/*.py")):
+        for module, line_number in imported_modules(path):
+            root_module = module.split(".", maxsplit=1)[0]
+            if root_module in PROHIBITED_IMPORTS:
+                relative_path = path.relative_to(source_root)
+                violations.append(f"{relative_path}:{line_number} imports {module}")
+    return violations
+
+
+def test_domain_has_no_prohibited_dependencies() -> None:
+    assert prohibited_domain_imports(SOURCE_ROOT) == []
+
+
+def test_shared_domain_does_not_import_cognition() -> None:
+    shared_domain = SOURCE_ROOT / "shared" / "domain"
+    violations = [
+        str(path.relative_to(SOURCE_ROOT))
+        for path in sorted(shared_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module == "noema.cognition" or module.startswith("noema.cognition.")
+    ]
+
+    assert violations == []
+
+
+@pytest.mark.parametrize("statement", ["import fastapi", "from sqlalchemy.orm import Session"])
+def test_scanner_detects_prohibited_imports(tmp_path: Path, statement: str) -> None:
+    domain = tmp_path / "example" / "domain"
+    domain.mkdir(parents=True)
+    (domain / "model.py").write_text(statement, encoding="utf-8")
+
+    violations = prohibited_domain_imports(tmp_path)
+
+    assert len(violations) == 1
+
+
+def test_workspace_has_only_allowed_noema_dependencies() -> None:
+    workspace_domain = SOURCE_ROOT / "cognition" / "domain" / "workspace"
+    allowed_prefixes = (
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.workspace",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(workspace_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
+def test_attention_has_only_allowed_noema_dependencies() -> None:
+    attention_domain = SOURCE_ROOT / "cognition" / "domain" / "attention"
+    allowed_prefixes = (
+        "noema.cognition.domain.attention",
+        "noema.cognition.domain.errors",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(attention_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
+def test_situation_has_only_allowed_noema_dependencies() -> None:
+    situation_domain = SOURCE_ROOT / "cognition" / "domain" / "situation"
+    allowed_prefixes = (
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.situation",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(situation_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
