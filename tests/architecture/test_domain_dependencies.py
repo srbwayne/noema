@@ -132,3 +132,23 @@ def test_situation_has_only_allowed_noema_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_epistemology_has_only_allowed_noema_dependencies() -> None:
+    epistemology_domain = SOURCE_ROOT / "cognition" / "domain" / "epistemology"
+    allowed_prefixes = (
+        "noema.cognition.domain.epistemology",
+        "noema.cognition.domain.errors",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(epistemology_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
