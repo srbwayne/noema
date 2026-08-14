@@ -1,12 +1,12 @@
 """Authorized cognitive processing depths."""
 
-from enum import Enum, auto
+from enum import Enum
 
 
 class CognitiveMode(Enum):
     """Depth and strategy authorized for a cognitive operation."""
 
-    REFLEX = auto()
-    FAST = auto()
-    DELIBERATE = auto()
-    DEEP = auto()
+    REFLEX = "reflex"
+    FAST = "fast"
+    DELIBERATE = "deliberate"
+    DEEP = "deep"
