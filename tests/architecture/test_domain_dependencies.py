@@ -192,3 +192,24 @@ def test_modes_has_only_allowed_noema_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_mode_arbitration_has_only_allowed_noema_dependencies() -> None:
+    arbitration_domain = SOURCE_ROOT / "cognition" / "domain" / "mode_arbitration"
+    allowed_prefixes = (
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.mode_arbitration",
+        "noema.cognition.domain.modes",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(arbitration_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
