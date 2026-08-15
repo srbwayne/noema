@@ -14,6 +14,10 @@ from noema.cognition.domain.errors.cognitive_mode_errors import (
     InvalidCognitiveModeDecisionError,
     InvalidCognitiveModePolicyError,
 )
+from noema.cognition.domain.errors.context_composition_errors import (
+    InvalidContextRequestError,
+    InvalidContextSliceError,
+)
 from noema.cognition.domain.errors.context_errors import InvalidContextVersionError
 from noema.cognition.domain.errors.epistemic_errors import (
     DuplicateEpistemicClaimError,
@@ -61,6 +65,8 @@ __all__ = [
     "InvalidCognitiveModeDecisionError",
     "InvalidCognitiveModePolicyError",
     "InvalidCognitiveItemError",
+    "InvalidContextRequestError",
+    "InvalidContextSliceError",
     "InvalidContextVersionError",
     "InvalidEpistemicClaimError",
     "InvalidEpistemicConflictError",
