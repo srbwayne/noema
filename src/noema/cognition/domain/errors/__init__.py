@@ -36,9 +36,12 @@ from noema.cognition.domain.errors.epistemic_errors import (
     StaleEpistemicDeltaError,
 )
 from noema.cognition.domain.errors.reasoning_errors import (
+    AmbiguousReasoningStrategyError,
     InvalidInformationNeedError,
     InvalidReasoningOutcomeError,
     InvalidReasoningRequestError,
+    InvalidReasoningStrategyDecisionError,
+    InvalidReasoningStrategyDemandError,
 )
 from noema.cognition.domain.errors.situation_errors import (
     DuplicateSituationEntryError,
@@ -60,6 +63,7 @@ from noema.cognition.domain.errors.workspace_errors import (
 )
 
 __all__ = [
+    "AmbiguousReasoningStrategyError",
     "ContextCompositionUnsatisfiedError",
     "CognitiveItemNotFoundError",
     "DuplicateCognitiveItemError",
@@ -91,6 +95,8 @@ __all__ = [
     "InvalidInformationNeedError",
     "InvalidReasoningOutcomeError",
     "InvalidReasoningRequestError",
+    "InvalidReasoningStrategyDecisionError",
+    "InvalidReasoningStrategyDemandError",
     "InvalidSituationDeltaError",
     "InvalidSituationEntryError",
     "InvalidSituationStateError",
