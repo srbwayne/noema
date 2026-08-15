@@ -213,3 +213,42 @@ def test_mode_arbitration_has_only_allowed_noema_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_context_composition_has_only_allowed_noema_dependencies() -> None:
+    composition_domain = SOURCE_ROOT / "cognition" / "domain" / "context_composition"
+    allowed_prefixes = (
+        "noema.cognition.domain.context",
+        "noema.cognition.domain.context_composition",
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.modes",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(composition_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
+def test_context_and_modes_do_not_import_context_composition() -> None:
+    protected_domains = (
+        SOURCE_ROOT / "cognition" / "domain" / "context",
+        SOURCE_ROOT / "cognition" / "domain" / "modes",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for domain in protected_domains
+        for path in sorted(domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module == "noema.cognition.domain.context_composition"
+        or module.startswith("noema.cognition.domain.context_composition.")
+    ]
+
+    assert violations == []
