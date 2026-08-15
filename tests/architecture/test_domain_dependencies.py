@@ -252,3 +252,25 @@ def test_context_and_modes_do_not_import_context_composition() -> None:
     ]
 
     assert violations == []
+
+
+def test_reasoning_has_only_allowed_noema_dependencies() -> None:
+    reasoning_domain = SOURCE_ROOT / "cognition" / "domain" / "reasoning"
+    allowed_prefixes = (
+        "noema.cognition.domain.budget",
+        "noema.cognition.domain.context_composition",
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.reasoning",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(reasoning_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
