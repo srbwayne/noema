@@ -38,9 +38,27 @@ def test_context_stamp_accepts_positive_versions() -> None:
 
 
 @pytest.mark.parametrize("field_name", VERSION_FIELDS)
+@pytest.mark.parametrize("value", [0, 1, 10])
+def test_context_stamp_accepts_each_valid_version(field_name: str, value: int) -> None:
+    stamp = context_stamp(**{field_name: value})
+
+    assert getattr(stamp, field_name) == value
+
+
+@pytest.mark.parametrize("field_name", VERSION_FIELDS)
 def test_context_stamp_rejects_each_negative_version(field_name: str) -> None:
     with pytest.raises(InvalidContextVersionError, match=field_name):
         context_stamp(**{field_name: -1})
+
+
+@pytest.mark.parametrize("field_name", VERSION_FIELDS)
+@pytest.mark.parametrize("value", [-1, True, False, 0.0, 1.0, 1.5, "1", None])
+def test_context_stamp_rejects_each_invalid_runtime_type(
+    field_name: str,
+    value: object,
+) -> None:
+    with pytest.raises(InvalidContextVersionError, match=field_name):
+        context_stamp(**{field_name: value})  # type: ignore[arg-type]
 
 
 def test_context_stamp_is_immutable() -> None:
