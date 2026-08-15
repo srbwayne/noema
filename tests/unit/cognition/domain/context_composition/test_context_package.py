@@ -166,6 +166,18 @@ def test_context_package_rejects_structural_duplicate_slice() -> None:
         ContextPackage(request=request(), slices=(context, context))
 
 
+def test_context_package_allows_same_content_ref_for_structurally_distinct_slices() -> None:
+    first = context_slice(content_ref="shared:123", trust=ContextTrustLevel.TRUSTED)
+    second = replace(first, trust=ContextTrustLevel.UNVERIFIED)
+
+    assert first.content_ref == second.content_ref
+    assert first != second
+
+    package = ContextPackage(request=request(), slices=(first, second))
+
+    assert package.slices == (first, second)
+
+
 def test_context_package_preserves_slice_order() -> None:
     first = context_slice(ContextSliceType.TASK, content_ref="task:123")
     second = context_slice(ContextSliceType.SITUATION)
