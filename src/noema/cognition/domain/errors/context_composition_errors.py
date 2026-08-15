@@ -3,8 +3,16 @@
 from noema.shared.domain import DomainError
 
 
+class ContextCompositionUnsatisfiedError(DomainError):
+    """Raised when valid composition inputs cannot satisfy a request."""
+
+
 class InvalidContextCandidateError(DomainError):
     """Raised when a context candidate violates its invariants."""
+
+
+class InvalidContextComposerError(DomainError):
+    """Raised when a context composer receives invalid inputs."""
 
 
 class InvalidContextCompositionPolicyError(DomainError):
