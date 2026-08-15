@@ -25,5 +25,5 @@ class ContextStamp:
             ("policy_version", self.policy_version),
         )
         for name, version in versions:
-            if version < 0:
+            if isinstance(version, bool) or not isinstance(version, int) or version < 0:
                 raise InvalidContextVersionError(f"{name} must be greater than or equal to zero")
