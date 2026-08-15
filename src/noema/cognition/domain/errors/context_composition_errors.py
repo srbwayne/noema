@@ -3,6 +3,18 @@
 from noema.shared.domain import DomainError
 
 
+class InvalidContextCandidateError(DomainError):
+    """Raised when a context candidate violates its invariants."""
+
+
+class InvalidContextCompositionPolicyError(DomainError):
+    """Raised when a context composition policy violates its invariants."""
+
+
+class InvalidContextPackageError(DomainError):
+    """Raised when a context package violates its invariants."""
+
+
 class InvalidContextRequestError(DomainError):
     """Raised when a context request violates its invariants."""
 
