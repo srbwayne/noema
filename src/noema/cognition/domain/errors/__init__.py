@@ -35,6 +35,11 @@ from noema.cognition.domain.errors.epistemic_errors import (
     InvalidEpistemicStateError,
     StaleEpistemicDeltaError,
 )
+from noema.cognition.domain.errors.reasoning_errors import (
+    InvalidInformationNeedError,
+    InvalidReasoningOutcomeError,
+    InvalidReasoningRequestError,
+)
 from noema.cognition.domain.errors.situation_errors import (
     DuplicateSituationEntryError,
     InvalidSituationDeltaError,
@@ -83,6 +88,9 @@ __all__ = [
     "InvalidEpistemicDeltaError",
     "InvalidEpistemicSourceError",
     "InvalidEpistemicStateError",
+    "InvalidInformationNeedError",
+    "InvalidReasoningOutcomeError",
+    "InvalidReasoningRequestError",
     "InvalidSituationDeltaError",
     "InvalidSituationEntryError",
     "InvalidSituationStateError",
