@@ -1,6 +1,8 @@
 """Contracts for bounded cognitive reasoning."""
 
 from .information_need import InformationNeed
+from .reasoning_coordination_plan import ReasoningCoordinationPlan
+from .reasoning_coordinator import ReasoningCoordinator
 from .reasoning_outcome import ReasoningOutcome
 from .reasoning_request import ReasoningRequest
 from .reasoning_status import ReasoningStatus
@@ -12,6 +14,8 @@ from .reasoning_strategy_selector import ReasoningStrategySelector
 
 __all__ = [
     "InformationNeed",
+    "ReasoningCoordinationPlan",
+    "ReasoningCoordinator",
     "ReasoningOutcome",
     "ReasoningRequest",
     "ReasoningStatus",

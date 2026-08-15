@@ -11,6 +11,10 @@ class InvalidInformationNeedError(DomainError):
     """Raised when an information need violates its representation."""
 
 
+class InvalidReasoningCoordinationPlanError(DomainError):
+    """Raised when a reasoning coordination plan violates its representation."""
+
+
 class InvalidReasoningRequestError(DomainError):
     """Raised when a reasoning request violates its representation."""
 
