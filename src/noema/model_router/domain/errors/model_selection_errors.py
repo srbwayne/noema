@@ -9,3 +9,11 @@ class InvalidModelSelectionRequestError(DomainError):
 
 class InvalidModelSelectionDecisionError(DomainError):
     """Raised when a model selection decision violates its representation."""
+
+
+class NoEligibleModelResourceError(DomainError):
+    """Raised when no model resource candidate satisfies the selection requirements."""
+
+
+class AmbiguousModelSelectionError(DomainError):
+    """Raised when multiple model resource candidates satisfy the selection requirements."""
