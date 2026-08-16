@@ -35,6 +35,11 @@ from noema.cognition.domain.errors.epistemic_errors import (
     InvalidEpistemicStateError,
     StaleEpistemicDeltaError,
 )
+from noema.cognition.domain.errors.planning_errors import (
+    InvalidPlanError,
+    InvalidPlanningRequestError,
+    InvalidPlanStepError,
+)
 from noema.cognition.domain.errors.reasoning_errors import (
     AmbiguousReasoningStrategyError,
     InvalidInformationNeedError,
@@ -94,6 +99,9 @@ __all__ = [
     "InvalidEpistemicSourceError",
     "InvalidEpistemicStateError",
     "InvalidInformationNeedError",
+    "InvalidPlanError",
+    "InvalidPlanningRequestError",
+    "InvalidPlanStepError",
     "InvalidReasoningCoordinationPlanError",
     "InvalidReasoningOutcomeError",
     "InvalidReasoningRequestError",
