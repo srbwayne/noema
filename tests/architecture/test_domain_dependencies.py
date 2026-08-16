@@ -388,6 +388,7 @@ def test_model_router_application_has_only_allowed_noema_dependencies() -> None:
     allowed_prefixes = (
         "noema.model_router.application",
         "noema.model_router.domain",
+        "noema.model_router.ports",
     )
     violations = [
         f"{path.relative_to(SOURCE_ROOT)} imports {module}"

@@ -271,10 +271,10 @@ def test_model_router_does_not_cache_decisions() -> None:
     assert spy.call_count == 2
 
 
-def test_model_router_application_exports_only_model_router() -> None:
+def test_model_router_application_exports_expected_public_surface() -> None:
     from noema.model_router import application
 
-    assert application.__all__ == ["ModelRouter"]
+    assert application.__all__ == ["ModelExecutionEngine", "ModelRouter"]
 
 
 def test_existing_model_router_domain_contracts_remain_intact() -> None:
