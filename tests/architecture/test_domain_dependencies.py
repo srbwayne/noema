@@ -317,3 +317,48 @@ def test_cognition_ports_has_no_prohibited_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_cognition_domain_does_not_import_cognition_application() -> None:
+    cognition_domain = SOURCE_ROOT / "cognition" / "domain"
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(cognition_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module == "noema.cognition.application"
+        or module.startswith("noema.cognition.application.")
+    ]
+
+    assert violations == []
+
+
+def test_cognition_application_has_only_allowed_noema_dependencies() -> None:
+    application_domain = SOURCE_ROOT / "cognition" / "application"
+    allowed_prefixes = (
+        "noema.cognition.application",
+        "noema.cognition.domain.reasoning",
+        "noema.cognition.ports",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(application_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
+def test_cognition_application_has_no_prohibited_dependencies() -> None:
+    application_domain = SOURCE_ROOT / "cognition" / "application"
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)}:{line_number} imports {module}"
+        for path in sorted(application_domain.glob("**/*.py"))
+        for module, line_number in imported_modules(path)
+        if module.split(".", maxsplit=1)[0] in PROHIBITED_IMPORTS
+    ]
+
+    assert violations == []
