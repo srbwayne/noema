@@ -1,13 +1,19 @@
 import dataclasses
 import inspect
+from typing import get_type_hints
 
 import pytest
-from ollama import GenerateResponse, RequestError, ResponseError
+from ollama import AsyncClient, GenerateResponse, RequestError, ResponseError
 
 from noema.model_router import infrastructure
 from noema.model_router.domain import ModelResource
 from noema.model_router.infrastructure import OllamaModelExecutor
-from noema.model_router.ports import ModelExecutionError, ModelExecutionRequest, ModelExecutor
+from noema.model_router.ports import (
+    ModelExecutionError,
+    ModelExecutionRequest,
+    ModelExecutionResult,
+    ModelExecutor,
+)
 
 
 def resource(**changes: object) -> ModelResource:
@@ -214,3 +220,19 @@ def test_ollama_model_executor_is_structurally_compatible_with_model_executor_po
     execute_method = OllamaModelExecutor.execute
     signature = inspect.signature(execute_method)
     assert list(signature.parameters) == ["self", "request"]
+
+
+def test_ollama_model_executor_has_exact_type_hints() -> None:
+    constructor_hints = get_type_hints(OllamaModelExecutor.__init__)
+    execute_hints = get_type_hints(OllamaModelExecutor.execute)
+
+    assert constructor_hints == {
+        "provider_ref": str,
+        "client": AsyncClient,
+        "return": type(None),
+    }
+
+    assert execute_hints == {
+        "request": ModelExecutionRequest,
+        "return": ModelExecutionResult,
+    }
