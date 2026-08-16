@@ -2,7 +2,11 @@ from dataclasses import MISSING, FrozenInstanceError, fields
 
 import pytest
 
-from noema.model_router.domain import ModelResource, ModelSelectionDecision
+from noema.model_router.domain import (
+    ModelResource,
+    ModelResourceCapabilities,
+    ModelSelectionDecision,
+)
 from noema.model_router.ports import ModelExecutionRequest, ModelExecutionResult
 
 
@@ -93,6 +97,12 @@ def test_execution_request_rejects_model_selection_decision_as_resource() -> Non
     decision = ModelSelectionDecision(selected_resource=resource())
     with pytest.raises(TypeError, match="resource must be a ModelResource"):
         ModelExecutionRequest(resource=decision, input_text="hello")  # type: ignore[arg-type]
+
+
+def test_execution_request_rejects_model_resource_capabilities_as_resource() -> None:
+    profile = ModelResourceCapabilities(resource=resource(), capabilities=frozenset())
+    with pytest.raises(TypeError, match="resource must be a ModelResource"):
+        ModelExecutionRequest(resource=profile, input_text="hello")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("invalid_text", [None, 1, True, b"bytes", [], {}])
