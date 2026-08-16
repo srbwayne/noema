@@ -381,3 +381,34 @@ def test_model_router_domain_has_only_allowed_noema_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_model_router_application_has_only_allowed_noema_dependencies() -> None:
+    application_domain = SOURCE_ROOT / "model_router" / "application"
+    allowed_prefixes = (
+        "noema.model_router.application",
+        "noema.model_router.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(application_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
+def test_model_router_application_has_no_prohibited_dependencies() -> None:
+    application_domain = SOURCE_ROOT / "model_router" / "application"
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)}:{line_number} imports {module}"
+        for path in sorted(application_domain.glob("**/*.py"))
+        for module, line_number in imported_modules(path)
+        if module.split(".", maxsplit=1)[0] in PROHIBITED_IMPORTS
+    ]
+
+    assert violations == []
