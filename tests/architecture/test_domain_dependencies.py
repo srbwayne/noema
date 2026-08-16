@@ -362,3 +362,22 @@ def test_cognition_application_has_no_prohibited_dependencies() -> None:
     ]
 
     assert violations == []
+
+
+def test_model_router_domain_has_only_allowed_noema_dependencies() -> None:
+    model_router_domain = SOURCE_ROOT / "model_router" / "domain"
+    allowed_prefixes = (
+        "noema.model_router.domain",
+        "noema.shared.domain",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(model_router_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
