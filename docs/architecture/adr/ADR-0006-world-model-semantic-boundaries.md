@@ -171,10 +171,10 @@ that does not currently exist as an approved contract.
                 v       v        v
           Situation  World    Epistemic
             Model    Model      Model
-                         |
-                         v
-               future Prediction /
-                 Counterfactual
+
+          future Prediction / Counterfactual
+          (may consume World Model through
+           a separately approved boundary)
 ```
 
 This diagram represents ownership and boundaries. It does not freeze classes or calls.
