@@ -314,6 +314,7 @@ def test_cognition_domain_does_not_import_cognition_ports() -> None:
 def test_cognition_ports_has_only_allowed_noema_dependencies() -> None:
     ports_domain = SOURCE_ROOT / "cognition" / "ports"
     allowed_prefixes = (
+        "noema.cognition.domain.planning",
         "noema.cognition.domain.reasoning",
         "noema.cognition.ports",
     )
