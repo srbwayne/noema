@@ -40,6 +40,10 @@ from noema.cognition.domain.errors.planning_errors import (
     InvalidPlanningRequestError,
     InvalidPlanStepError,
 )
+from noema.cognition.domain.errors.prediction_counterfactual_errors import (
+    InvalidCounterfactualRequestError,
+    InvalidPredictionRequestError,
+)
 from noema.cognition.domain.errors.reasoning_errors import (
     AmbiguousReasoningStrategyError,
     InvalidInformationNeedError,
@@ -93,6 +97,7 @@ __all__ = [
     "InvalidContextRequestError",
     "InvalidContextSliceError",
     "InvalidContextVersionError",
+    "InvalidCounterfactualRequestError",
     "InvalidEpistemicClaimError",
     "InvalidEpistemicConflictError",
     "InvalidEpistemicDeltaError",
@@ -102,6 +107,7 @@ __all__ = [
     "InvalidPlanError",
     "InvalidPlanningRequestError",
     "InvalidPlanStepError",
+    "InvalidPredictionRequestError",
     "InvalidReasoningCoordinationPlanError",
     "InvalidReasoningOutcomeError",
     "InvalidReasoningRequestError",

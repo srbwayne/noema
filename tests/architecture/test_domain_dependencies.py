@@ -299,6 +299,27 @@ def test_planning_has_only_allowed_noema_dependencies() -> None:
     assert violations == []
 
 
+def test_prediction_counterfactual_has_only_allowed_noema_dependencies() -> None:
+    prediction_counterfactual_domain = (
+        SOURCE_ROOT / "cognition" / "domain" / "prediction_counterfactual"
+    )
+    allowed_prefixes = (
+        "noema.cognition.domain.errors",
+        "noema.cognition.domain.prediction_counterfactual",
+    )
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} imports {module}"
+        for path in sorted(prediction_counterfactual_domain.glob("**/*.py"))
+        for module, _ in imported_modules(path)
+        if module.startswith("noema.")
+        and not any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in allowed_prefixes
+        )
+    ]
+
+    assert violations == []
+
+
 def test_cognition_domain_does_not_import_cognition_ports() -> None:
     cognition_domain = SOURCE_ROOT / "cognition" / "domain"
     violations = [
