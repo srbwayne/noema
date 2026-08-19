@@ -42,6 +42,7 @@ from noema.cognition.domain.errors.planning_errors import (
 )
 from noema.cognition.domain.errors.prediction_counterfactual_errors import (
     InvalidCounterfactualRequestError,
+    InvalidPredictionCounterfactualResultError,
     InvalidPredictionRequestError,
 )
 from noema.cognition.domain.errors.reasoning_errors import (
@@ -107,6 +108,7 @@ __all__ = [
     "InvalidPlanError",
     "InvalidPlanningRequestError",
     "InvalidPlanStepError",
+    "InvalidPredictionCounterfactualResultError",
     "InvalidPredictionRequestError",
     "InvalidReasoningCoordinationPlanError",
     "InvalidReasoningOutcomeError",
