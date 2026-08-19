@@ -1,4 +1,4 @@
-"""Errors raised by prediction/counterfactual request invariants."""
+"""Errors raised by prediction/counterfactual contract invariants."""
 
 from noema.shared.domain import DomainError
 
