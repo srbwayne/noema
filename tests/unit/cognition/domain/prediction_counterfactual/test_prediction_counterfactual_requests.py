@@ -279,6 +279,8 @@ def test_prediction_counterfactual_package_exports_expected_public_surface() -> 
 
     assert prediction_counterfactual.__all__ == [
         "CounterfactualRequest",
+        "PredictionCounterfactualResult",
+        "PredictionCounterfactualStatus",
         "PredictionRequest",
     ]
 

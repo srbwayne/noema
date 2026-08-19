@@ -9,3 +9,7 @@ class InvalidPredictionRequestError(DomainError):
 
 class InvalidCounterfactualRequestError(DomainError):
     """Raised when a counterfactual request violates its representation."""
+
+
+class InvalidPredictionCounterfactualResultError(DomainError):
+    """Raised when a prediction/counterfactual result violates its representation."""
