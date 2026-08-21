@@ -135,16 +135,14 @@ def test_invalid_evaluation_request_error_is_exported_from_errors_package() -> N
 def test_evaluation_package_exports_expected_public_surface() -> None:
     from noema.cognition.domain import evaluation
 
-    assert evaluation.__all__ == ["EvaluationRequest"]
+    assert evaluation.__all__ == ["EvaluationRequest", "EvaluationResult", "EvaluationStatus"]
 
 
 def test_evaluation_package_does_not_export_forward_looking_names() -> None:
     from noema.cognition.domain import evaluation
 
     forbidden = {
-        "EvaluationResult",
         "EvaluationOutcome",
-        "EvaluationStatus",
         "Utility",
         "UtilityValue",
         "UtilityJudgment",
