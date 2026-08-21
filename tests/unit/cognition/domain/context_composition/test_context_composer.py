@@ -628,3 +628,52 @@ def test_composed_package_preserves_all_final_invariants() -> None:
         any(item.slice_type is required_type for item in package.slices)
         for required_type in current_request.required_slice_types
     )
+
+
+def test_required_coverage_exactly_hitting_max_tokens_is_accepted() -> None:
+    required_request = request(
+        required_slice_types=(ContextSliceType.TASK, ContextSliceType.SITUATION),
+        max_tokens=40,
+    )
+    candidates = (
+        candidate("task", slice_type=ContextSliceType.TASK, token_estimate=20),
+        candidate("situation", slice_type=ContextSliceType.SITUATION, token_estimate=20),
+    )
+    package = composer().compose(request=required_request, candidates=candidates)
+    assert len(package.slices) == 2
+    assert package.total_token_estimate == 40
+
+
+def test_required_coverage_exactly_hitting_max_slices_is_accepted() -> None:
+    required_request = request(
+        required_slice_types=(ContextSliceType.TASK, ContextSliceType.SITUATION)
+    )
+    candidates = (
+        candidate("task", slice_type=ContextSliceType.TASK),
+        candidate("situation", slice_type=ContextSliceType.SITUATION),
+    )
+    package = composer(max_slices=2).compose(request=required_request, candidates=candidates)
+    assert len(package.slices) == 2
+
+
+def test_context_composer_preserves_required_slice_types_order() -> None:
+    required_request = request(
+        required_slice_types=(ContextSliceType.SITUATION, ContextSliceType.TASK)
+    )
+    candidates = (
+        candidate("task", slice_type=ContextSliceType.TASK),
+        candidate("situation", slice_type=ContextSliceType.SITUATION),
+    )
+    package = composer().compose(request=required_request, candidates=candidates)
+    assert tuple(item.slice_type for item in package.slices) == (
+        ContextSliceType.SITUATION,
+        ContextSliceType.TASK,
+    )
+
+
+def test_context_composer_is_immutable_and_structurally_equal() -> None:
+    first_composer = ContextComposer(policy=policy())
+    second_composer = ContextComposer(policy=policy())
+    assert first_composer == second_composer
+    with pytest.raises(FrozenInstanceError):
+        first_composer.policy = policy(max_slices=5)
