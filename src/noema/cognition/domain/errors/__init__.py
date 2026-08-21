@@ -37,6 +37,7 @@ from noema.cognition.domain.errors.epistemic_errors import (
 )
 from noema.cognition.domain.errors.evaluation_errors import (
     InvalidEvaluationRequestError,
+    InvalidEvaluationResultError,
 )
 from noema.cognition.domain.errors.planning_errors import (
     InvalidPlanError,
@@ -108,6 +109,7 @@ __all__ = [
     "InvalidEpistemicSourceError",
     "InvalidEpistemicStateError",
     "InvalidEvaluationRequestError",
+    "InvalidEvaluationResultError",
     "InvalidInformationNeedError",
     "InvalidPlanError",
     "InvalidPlanningRequestError",
