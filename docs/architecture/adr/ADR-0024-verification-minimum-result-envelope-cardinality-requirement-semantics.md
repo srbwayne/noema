@@ -65,8 +65,7 @@ Conceptually: `NO_SPECIFIC_RESULT_ENVELOPE_CARDINALITY_REQUIRED_BY_MINIMUM`.
 This is a **requirement-level** decision. It concerns only whether committing to one specific
 result-envelope cardinality is one of the mandatory semantic invariants of the minimum successful
 Verification contract. It says nothing about which cardinality, if any, a future concrete or richer
-representation will actually use — every future concrete representation will naturally carry some
-definite cardinality; this ADR freezes only that the minimum contract does not mandate one such
+representation may use; this ADR freezes only that the minimum contract does not mandate one such
 cardinality as an invariant.
 
 ### "Not required" precision — critical boundary
@@ -105,10 +104,10 @@ A future, separately evidenced Verification capability may adopt a particular re
 cardinality without contradicting this ADR. `NOT_REQUIRED` at the minimum level does not forbid a
 stricter commitment at a higher, separately decided level.
 `NO_SPECIFIC_RESULT_ENVELOPE_CARDINALITY_REQUIRED_BY_MINIMUM` does **not** mean
-`NO_RESULT_ENVELOPE`: a concrete Verification capability will
-necessarily produce some definite result-envelope shape when it is eventually built; this ADR
-freezes only that no particular shape is a mandatory invariant of the minimum semantic contract
-today. This ADR does not identify which cardinality should eventually be adopted.
+`NO_RESULT_ENVELOPE`; those are distinct propositions. This ADR neither requires nor forbids a
+future concrete result-envelope construct. If a future, separately evidenced capability introduces
+such a construct, its cardinality remains for that separate decision. This ADR does not identify
+which cardinality should eventually be adopted.
 
 ### ADR-0020 relationship — semantic judgment atom preserved
 
