@@ -3,10 +3,11 @@
 - Status: Accepted
 - Date: 2026-09-05
 
-> Status `Accepted` records that the semantic decision this ADR carries has already been approved by
-> its decision review (M0-15GS). While this ADR remains only on its local topic branch, it is an
-> **approved decision / local ADR draft**, not yet **accepted `main` authority**. It does not become
-> accepted `main` authority until merged into `main`.
+> Status `Accepted` records that the semantic decision this ADR carries was approved by its decision
+> review (M0-15GS). Before merge, this ADR existed as an approved decision on its topic branch and
+> was not yet accepted `main` authority. PR #50 merged it into `main` as merge commit
+> `ecdf2552cf92ced49ebc88aa429c38aab5be1041` on 2026-09-05; it is therefore now accepted `main`
+> authority.
 
 ## Context
 
