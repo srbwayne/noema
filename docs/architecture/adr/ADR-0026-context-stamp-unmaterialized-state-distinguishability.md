@@ -171,7 +171,7 @@ requires its own explicit ADR before implementation.
 | --- | --- |
 | Unmaterialized-state distinguishability | Required |
 | Zero as a valid observed version | Unchanged, remains valid |
-| Zero as an absence marker | Not established, not decided |
+| Zero as the sole unmaterialized-state marker | Not permitted; zero remains a valid observed version |
 | `ContextStamp` structural shape | Unchanged |
 | Representation mechanism | Unresolved |
 | Missing-owner implementation requirement | Not decided |
