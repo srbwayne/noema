@@ -22,7 +22,7 @@ def _is_observed_version(value: object) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ContextStamp:
-    """Versions of cognitive state observed when an operation starts.
+    """Snapshot of cognitive state dimension versions and materialization state.
 
     ``workspace_version`` and ``situation_version`` name dimensions whose owner is
     currently materialized (``CognitiveWorkspace``, ``SituationModel``); each accepts

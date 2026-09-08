@@ -105,7 +105,7 @@ def test_context_stamp_accepts_unmaterialized_independently_per_field() -> None:
     assert stamp.policy_version is ContextVersionMarker.UNMATERIALIZED
 
 
-def test_context_stamp_honest_unmaterialized_construction() -> None:
+def test_context_stamp_accepts_unmaterialized_for_all_marker_eligible_fields() -> None:
     stamp = ContextStamp(
         workspace_version=0,
         situation_version=0,
