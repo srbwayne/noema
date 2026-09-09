@@ -7,7 +7,7 @@
 
 `CognitiveWorkspace` and `SituationModel` already exist as immutable, versioned snapshots (`@dataclass(frozen=True, slots=True, kw_only=True)`, each with an incrementing `version: int` field starting at `0`). Their state-changing behavior — `CognitiveWorkspace.add_item`/`remove_item`/`set_focus`/`clear_focus` and `SituationModel.apply` — never mutates in place; each returns a new replacement snapshot via `dataclasses.replace`, with `version` incremented and the snapshot's own logical identifier (`workspace_id`/`situation_id`) preserved unchanged.
 
-No canonical runtime owner currently retains either snapshot. No production code anywhere in the repository constructs a `CognitiveWorkspace` or `SituationModel` outside their own module and test fixtures, and no production code reads `.version` from either type except `ContextStamp`'s own internal field references.
+No canonical runtime owner currently retains either snapshot. No production code anywhere in the repository constructs a `CognitiveWorkspace` or `SituationModel` outside their own module and test fixtures, and no production code reads `.version` from either live snapshot to produce runtime observation data.
 
 Correspondingly, no production `ContextStamp` producer currently exists: nothing in `src/` constructs a `ContextStamp`, so nothing currently observes real `workspace_version`/`situation_version` values from a live snapshot.
 
