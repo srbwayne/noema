@@ -402,6 +402,8 @@ def test_cognition_application_has_only_allowed_noema_dependencies() -> None:
         "noema.cognition.application",
         "noema.cognition.domain.planning",
         "noema.cognition.domain.reasoning",
+        "noema.cognition.domain.situation",
+        "noema.cognition.domain.workspace",
         "noema.cognition.ports",
     )
     violations = [
