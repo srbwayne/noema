@@ -365,4 +365,9 @@ def test_spy_planning_executor_does_not_inherit_planning_executor() -> None:
 def test_planner_application_export() -> None:
     from noema.cognition import application
 
-    assert application.__all__ == ["Planner", "ReasoningEngine"]
+    assert application.__all__ == [
+        "CognitiveStateOwner",
+        "InvalidCognitiveStateReplacementError",
+        "Planner",
+        "ReasoningEngine",
+    ]
