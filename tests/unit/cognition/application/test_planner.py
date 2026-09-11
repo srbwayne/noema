@@ -371,4 +371,5 @@ def test_planner_application_export() -> None:
         "InvalidCognitiveStateReplacementError",
         "Planner",
         "ReasoningEngine",
+        "assemble_direct_reasoning_request",
     ]
