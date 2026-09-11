@@ -400,6 +400,9 @@ def test_cognition_application_has_only_allowed_noema_dependencies() -> None:
     application_domain = SOURCE_ROOT / "cognition" / "application"
     allowed_prefixes = (
         "noema.cognition.application",
+        "noema.cognition.domain.context",
+        "noema.cognition.domain.context_composition",
+        "noema.cognition.domain.modes",
         "noema.cognition.domain.planning",
         "noema.cognition.domain.reasoning",
         "noema.cognition.domain.situation",
