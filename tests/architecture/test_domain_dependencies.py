@@ -569,3 +569,21 @@ def test_model_router_infrastructure_has_only_allowed_noema_dependencies() -> No
     ]
 
     assert violations == []
+
+
+def test_bounded_context_internals_do_not_import_bootstrap() -> None:
+    """The top-level composition root is an outer assembly edge (ADR-0029).
+
+    No bounded-context internal package may depend on it -- only top-level
+    process entrypoints (``main.py``) may eventually delegate to it.
+    """
+    inner_package_roots = [path for path in SOURCE_ROOT.iterdir() if path.is_dir()]
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)}:{line_number} imports {module}"
+        for package_root in sorted(inner_package_roots)
+        for path in sorted(package_root.glob("**/*.py"))
+        for module, line_number in imported_modules(path)
+        if module == "noema.bootstrap" or module.startswith("noema.bootstrap.")
+    ]
+
+    assert violations == []
