@@ -13,14 +13,20 @@ from noema.cognition.application import (
     ReasoningEngine,
 )
 from noema.cognition.domain.budget import CognitiveBudget
+from noema.cognition.domain.context import ContextVersionMarker
 from noema.cognition.domain.context_composition import (
     ContextSensitivity,
     ContextTrustLevel,
 )
 from noema.cognition.domain.modes import CognitiveMode
-from noema.cognition.domain.reasoning import ReasoningOutcome, ReasoningStrategy
+from noema.cognition.domain.reasoning import (
+    ReasoningOutcome,
+    ReasoningRequest,
+    ReasoningStrategy,
+)
 from noema.cognition.domain.situation import SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
+from noema.cognition.infrastructure import ModelReasoningExecutor
 from noema.cognition.ports import ReasoningExecutionError
 from noema.model_router.domain import (
     ModelCapability,
@@ -567,3 +573,100 @@ def test_module_source_does_not_import_settings_frameworks() -> None:
 
 def test_selector_symbol_used_is_the_real_model_selector() -> None:
     assert bootstrap.ModelSelector is ModelSelector
+
+
+# --- initial ContextStamp integration through the real graph ------------------
+
+
+@pytest.mark.asyncio
+async def test_initial_context_stamp_propagates_through_the_real_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the fresh canonical state built by bootstrap reaches the real
+    ``ReasoningRequest`` via C3, without replacing any real component.
+
+    ``ModelReasoningExecutor.execute`` is temporarily wrapped -- not
+    replaced -- so the captured request is exactly what the real graph
+    (``DirectReasoningOperation`` -> ``ReasoningEngine`` ->
+    ``ModelReasoningExecutor`` -> ``ModelExecutionEngine`` -> ``ModelRouter``
+    -> ``ModelSelector`` -> ``OllamaModelExecutor``) actually produced and
+    executed.
+    """
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    captured_requests: list[ReasoningRequest] = []
+    original_execute = ModelReasoningExecutor.execute
+
+    async def _capturing_execute(
+        self: ModelReasoningExecutor, request: ReasoningRequest
+    ) -> ReasoningOutcome:
+        captured_requests.append(request)
+        return await original_execute(self, request)
+
+    monkeypatch.setattr(ModelReasoningExecutor, "execute", _capturing_execute)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        result = await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
+
+    assert isinstance(result, ReasoningOutcome)
+    assert len(captured_requests) == 1
+
+    stamp = captured_requests[0].context.request.context_stamp
+    assert stamp.workspace_version == 0
+    assert stamp.situation_version == 0
+    assert stamp.identity_version is ContextVersionMarker.UNMATERIALIZED
+    assert stamp.goal_version is ContextVersionMarker.UNMATERIALIZED
+    assert stamp.policy_version is ContextVersionMarker.UNMATERIALIZED
+
+
+# --- same-runtime multi-operation canonical-state continuity -----------------
+
+
+@pytest.mark.asyncio
+async def test_same_runtime_context_retains_canonical_state_across_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove bootstrap does not reconstruct the canonical runtime graph per
+    operation: the same assembler/owner/Workspace/Situation identities and
+    the same ``DirectReasoningOperation`` serve two sequential executions.
+
+    This does not imply canonical state is immutable or unreplaceable --
+    ``CognitiveStateOwner``'s existing exact-successor replacement authority
+    is unchanged; it only proves bootstrap wires one graph per context, not
+    one graph per operation.
+    """
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        assembler = operation._context_request_assembler  # noqa: SLF001
+        state_owner = assembler._state_owner  # noqa: SLF001
+        workspace, situation = state_owner.current_snapshots()
+
+        result_a = await operation.execute(
+            **_execute_kwargs(problem_ref="problem:a", problem_statement="First question.")
+        )  # type: ignore[arg-type]
+        result_b = await operation.execute(
+            **_execute_kwargs(problem_ref="problem:b", problem_statement="Second question.")
+        )  # type: ignore[arg-type]
+
+        assert operation._context_request_assembler is assembler  # noqa: SLF001
+        assert assembler._state_owner is state_owner  # noqa: SLF001
+        workspace_after, situation_after = state_owner.current_snapshots()
+        assert workspace_after is workspace
+        assert situation_after is situation
+
+    assert result_a.problem_ref == "problem:a"
+    assert result_b.problem_ref == "problem:b"
+
+    client = fake_client_class.created[0]
+    assert len(client.generate_calls) == 2
