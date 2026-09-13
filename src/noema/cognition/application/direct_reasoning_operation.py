@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+from noema.cognition.application.canonical_input_ingestor import CanonicalInputIngestor
 from noema.cognition.application.context_request_assembler import ContextRequestAssembler
 from noema.cognition.application.direct_reasoning_request_assembler import (
     assemble_direct_reasoning_request,
@@ -21,20 +22,26 @@ from noema.cognition.domain.reasoning import ReasoningOutcome
 class DirectReasoningOperation:
     """Execute the first DIRECT reasoning operation end to end.
 
-    Binds one ``ContextRequestAssembler`` and one ``ReasoningEngine`` and, for
-    each ``execute`` call, joins exactly one canonical ``ContextRequest``
+    Binds one ``CanonicalInputIngestor``, one ``ContextRequestAssembler``, and
+    one ``ReasoningEngine`` and, for each ``execute`` call, joins exactly one
+    canonical-task ingestion (M0-16), exactly one canonical ``ContextRequest``
     assembly (C3), exactly one DIRECT ``ReasoningRequest`` assembly (D1), and
     exactly one ``ReasoningEngine.reason`` execution, returning the resulting
     ``ReasoningOutcome`` unchanged.
 
     It selects no context policy, no ``CognitiveBudget`` values and no
     reasoning strategy, observes no canonical cognitive state directly,
-    constructs no ``ContextPackage`` or ``ReasoningRequest`` itself, and
-    performs no I/O of its own; any domain or execution error raised by C3,
-    D1, or the ``ReasoningEngine`` propagates unchanged.
+    constructs no ``SituationEntry``, ``SituationDelta``, ``ContextPackage``,
+    or ``ReasoningRequest`` itself, and performs no I/O of its own; any
+    domain or execution error raised by the ingestor, C3, D1, or the
+    ``ReasoningEngine`` propagates unchanged. A failure during ingestion
+    prevents context assembly, reasoning-request assembly, and reasoning
+    execution; a failure after a successful ingestion never triggers a
+    second ingestion attempt or any compensating reversal.
     """
 
     __slots__ = (
+        "_canonical_input_ingestor",
         "_context_request_assembler",
         "_reasoning_engine",
     )
@@ -42,14 +49,18 @@ class DirectReasoningOperation:
     def __init__(
         self,
         *,
+        canonical_input_ingestor: CanonicalInputIngestor,
         context_request_assembler: ContextRequestAssembler,
         reasoning_engine: ReasoningEngine,
     ) -> None:
-        """Bind the assembler and engine this operation delegates to."""
+        """Bind the ingestor, assembler, and engine this operation delegates to."""
+        if not isinstance(canonical_input_ingestor, CanonicalInputIngestor):
+            raise TypeError("canonical_input_ingestor must be a CanonicalInputIngestor")
         if not isinstance(context_request_assembler, ContextRequestAssembler):
             raise TypeError("context_request_assembler must be a ContextRequestAssembler")
         if not isinstance(reasoning_engine, ReasoningEngine):
             raise TypeError("reasoning_engine must be a ReasoningEngine")
+        self._canonical_input_ingestor = canonical_input_ingestor
         self._context_request_assembler = context_request_assembler
         self._reasoning_engine = reasoning_engine
 
@@ -71,15 +82,19 @@ class DirectReasoningOperation:
         problem_statement: str,
         budget: CognitiveBudget,
     ) -> ReasoningOutcome:
-        """Assemble the DIRECT reasoning request and execute it once.
+        """Ingest the canonical task, assemble the DIRECT request, and execute it once.
 
-        Observes the canonical cognitive state exactly once, transitively,
-        through the bound ``ContextRequestAssembler``; selects no context
-        policy, budget values, or strategy; and returns the exact
-        ``ReasoningOutcome`` produced by the bound ``ReasoningEngine``. Any
-        error raised while assembling the ``ContextRequest``, assembling the
+        Retains ``task_ref`` as the canonical current task (M0-16) through the
+        bound ``CanonicalInputIngestor`` before observing the canonical
+        cognitive state exactly once, transitively, through the bound
+        ``ContextRequestAssembler``; selects no context policy, budget
+        values, or strategy; and returns the exact ``ReasoningOutcome``
+        produced by the bound ``ReasoningEngine``. Any error raised while
+        ingesting the task, assembling the ``ContextRequest``, assembling the
         DIRECT ``ReasoningRequest``, or executing it propagates unwrapped.
         """
+        self._canonical_input_ingestor.ingest_task(task_ref=task_ref)
+
         context_request = self._context_request_assembler.assemble(
             role=role,
             task_ref=task_ref,

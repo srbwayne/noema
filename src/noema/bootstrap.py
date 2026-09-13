@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from ollama import AsyncClient
 
 from noema.cognition.application import (
+    CanonicalInputIngestor,
     CognitiveStateOwner,
     ContextRequestAssembler,
     DirectReasoningOperation,
@@ -90,6 +91,7 @@ async def open_direct_runtime(
         workspace = CognitiveWorkspace(budget=workspace_budget)
         situation = SituationModel()
         state_owner = CognitiveStateOwner(workspace=workspace, situation=situation)
+        canonical_input_ingestor = CanonicalInputIngestor(state_owner=state_owner)
         context_request_assembler = ContextRequestAssembler(state_owner=state_owner)
 
         requirements = ModelCapabilityRequirements(
@@ -114,6 +116,7 @@ async def open_direct_runtime(
         reasoning_engine = ReasoningEngine(executor=reasoning_executor)
 
         operation = DirectReasoningOperation(
+            canonical_input_ingestor=canonical_input_ingestor,
             context_request_assembler=context_request_assembler,
             reasoning_engine=reasoning_engine,
         )

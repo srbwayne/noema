@@ -1,5 +1,6 @@
 """Application services orchestrating cognition domain and port contracts."""
 
+from .canonical_input_ingestor import CanonicalInputIngestor
 from .cognitive_state_owner import (
     CognitiveStateOwner,
     InvalidCognitiveStateReplacementError,
@@ -11,6 +12,7 @@ from .planner import Planner
 from .reasoning_engine import ReasoningEngine
 
 __all__ = [
+    "CanonicalInputIngestor",
     "CognitiveStateOwner",
     "ContextRequestAssembler",
     "DirectReasoningOperation",

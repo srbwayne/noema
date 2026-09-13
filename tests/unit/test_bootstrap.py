@@ -8,6 +8,7 @@ import pytest
 import noema.bootstrap as bootstrap
 from noema.bootstrap import open_direct_runtime
 from noema.cognition.application import (
+    CanonicalInputIngestor,
     CognitiveStateOwner,
     DirectReasoningOperation,
     ReasoningEngine,
@@ -24,7 +25,7 @@ from noema.cognition.domain.reasoning import (
     ReasoningRequest,
     ReasoningStrategy,
 )
-from noema.cognition.domain.situation import SituationModel
+from noema.cognition.domain.situation import SituationEntryKind, SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
 from noema.cognition.infrastructure import ModelReasoningExecutor
 from noema.cognition.ports import ReasoningExecutionError
@@ -145,6 +146,7 @@ def test_no_runtime_container_type_is_defined() -> None:
 
 def test_no_process_global_runtime_objects_at_import_time() -> None:
     runtime_object_types = (
+        CanonicalInputIngestor,
         CognitiveStateOwner,
         DirectReasoningOperation,
         ReasoningEngine,
@@ -310,6 +312,52 @@ async def test_fresh_workspace_and_situation_are_constructed(
         assert workspace.budget is workspace_budget
         assert situation.version == 0
         assert situation.entries == ()
+
+
+# --- M0-16 canonical input ingestor wiring (§17) -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_canonical_input_ingestor_shares_the_same_state_owner_as_assembler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        ingestor = operation._canonical_input_ingestor  # noqa: SLF001
+        assembler = operation._context_request_assembler  # noqa: SLF001
+
+        assert isinstance(ingestor, CanonicalInputIngestor)
+        assert ingestor._state_owner is assembler._state_owner  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_first_execute_ingests_canonical_task_and_advances_situation_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        state_owner = operation._context_request_assembler._state_owner  # noqa: SLF001
+
+        await operation.execute(**_execute_kwargs(task_ref="task:distinctive"))  # type: ignore[arg-type]
+
+        workspace, situation = state_owner.current_snapshots()
+        assert workspace.version == 0
+        assert situation.version == 1
+        task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+        assert len(task_entries) == 1
+        assert task_entries[0].content_ref == "task:distinctive"
 
 
 # --- C5 selection-request / provider / client identity (§54, §55, §56) -------
@@ -618,7 +666,9 @@ async def test_initial_context_stamp_propagates_through_the_real_graph(
 
     stamp = captured_requests[0].context.request.context_stamp
     assert stamp.workspace_version == 0
-    assert stamp.situation_version == 0
+    # M0-16: the single execute() call ingests exactly one canonical TASK
+    # entry before this ContextStamp is observed, advancing Situation by one.
+    assert stamp.situation_version == 1
     assert stamp.identity_version is ContextVersionMarker.UNMATERIALIZED
     assert stamp.goal_version is ContextVersionMarker.UNMATERIALIZED
     assert stamp.policy_version is ContextVersionMarker.UNMATERIALIZED
@@ -632,13 +682,17 @@ async def test_same_runtime_context_retains_canonical_state_across_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Prove bootstrap does not reconstruct the canonical runtime graph per
-    operation: the same assembler/owner/Workspace/Situation identities and
-    the same ``DirectReasoningOperation`` serve two sequential executions.
+    operation: the same assembler/owner identities and the same
+    ``DirectReasoningOperation`` serve two sequential executions, and the
+    same ``CognitiveWorkspace`` instance persists across them (M0-16 does
+    not touch Workspace).
 
-    This does not imply canonical state is immutable or unreplaceable --
-    ``CognitiveStateOwner``'s existing exact-successor replacement authority
-    is unchanged; it only proves bootstrap wires one graph per context, not
-    one graph per operation.
+    ``SituationModel`` legitimately advances -- once per execution, via
+    M0-16's own canonical-task ingestion -- so it is asserted to be an
+    *exact-successor* replacement after two executions, not the same
+    object. This does not imply canonical state is immutable or
+    unreplaceable in general; it only proves bootstrap wires one graph per
+    context, not one graph per operation.
     """
     fake_client_class = _make_fake_async_client_class(generate_result="the answer")
     monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
@@ -663,7 +717,10 @@ async def test_same_runtime_context_retains_canonical_state_across_operations(
         assert assembler._state_owner is state_owner  # noqa: SLF001
         workspace_after, situation_after = state_owner.current_snapshots()
         assert workspace_after is workspace
-        assert situation_after is situation
+        assert situation_after is not situation
+        assert situation_after.situation_id == situation.situation_id
+        assert situation_after.version == situation.version + 2
+        assert len(situation_after.entries) == 2
 
     assert result_a.problem_ref == "problem:a"
     assert result_b.problem_ref == "problem:b"
