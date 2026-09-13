@@ -587,3 +587,21 @@ def test_bounded_context_internals_do_not_import_bootstrap() -> None:
     ]
 
     assert violations == []
+
+
+def test_bounded_context_internals_do_not_import_process() -> None:
+    """The process-private CLI module is a process outer edge, not a context.
+
+    No bounded-context internal package may depend on ``noema._process`` --
+    only the top-level process entrypoint (``main.py``) imports it.
+    """
+    inner_package_roots = [path for path in SOURCE_ROOT.iterdir() if path.is_dir()]
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)}:{line_number} imports {module}"
+        for package_root in sorted(inner_package_roots)
+        for path in sorted(package_root.glob("**/*.py"))
+        for module, line_number in imported_modules(path)
+        if module == "noema._process" or module.startswith("noema._process.")
+    ]
+
+    assert violations == []
