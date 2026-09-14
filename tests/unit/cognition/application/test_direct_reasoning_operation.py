@@ -7,6 +7,7 @@ from typing import get_type_hints
 import pytest
 
 from noema.cognition.application import (
+    CanonicalInputIngestor,
     ContextRequestAssembler,
     DirectReasoningOperation,
     ReasoningEngine,
@@ -33,7 +34,7 @@ from noema.cognition.domain.reasoning import (
     ReasoningStatus,
     ReasoningStrategy,
 )
-from noema.cognition.domain.situation import SituationModel
+from noema.cognition.domain.situation import SituationEntryKind, SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
 from noema.cognition.ports import ReasoningExecutionError
 
@@ -65,17 +66,39 @@ def _owner(*, workspace_version: int = 0, situation_version: int = 0) -> Cogniti
 
 
 class _CountingStateOwner(CognitiveStateOwner):
-    """A CognitiveStateOwner that records how often current_snapshots is called."""
+    """A CognitiveStateOwner that records an ordered log of canonical calls."""
 
-    __slots__ = ("current_snapshots_call_count",)
+    __slots__ = ("current_snapshots_call_count", "replace_situation_call_count", "call_log")
 
     def __init__(self, *, workspace: CognitiveWorkspace, situation: SituationModel) -> None:
         super().__init__(workspace=workspace, situation=situation)
         self.current_snapshots_call_count = 0
+        self.replace_situation_call_count = 0
+        self.call_log: list[str] = []
 
     def current_snapshots(self) -> tuple[CognitiveWorkspace, SituationModel]:
         self.current_snapshots_call_count += 1
+        self.call_log.append("current_snapshots")
         return super().current_snapshots()
+
+    def replace_situation(self, replacement: SituationModel) -> None:
+        self.replace_situation_call_count += 1
+        self.call_log.append("replace_situation")
+        super().replace_situation(replacement)
+
+
+class _SpyIngestor(CanonicalInputIngestor):
+    """A CanonicalInputIngestor that records every ingest_task call."""
+
+    __slots__ = ("ingest_task_calls",)
+
+    def __init__(self, *, state_owner: CognitiveStateOwner) -> None:
+        super().__init__(state_owner=state_owner)
+        self.ingest_task_calls: list[str] = []
+
+    def ingest_task(self, *, task_ref: str) -> None:
+        self.ingest_task_calls.append(task_ref)
+        super().ingest_task(task_ref=task_ref)
 
 
 class SpyReasoningExecutor:
@@ -162,19 +185,25 @@ def _completed_outcome(
 def _operation(
     *, owner: CognitiveStateOwner, executor: object
 ) -> tuple[DirectReasoningOperation, "SpyReasoningExecutor"]:
+    ingestor = CanonicalInputIngestor(state_owner=owner)
     assembler = ContextRequestAssembler(state_owner=owner)
     engine = ReasoningEngine(executor=executor)  # type: ignore[arg-type]
     return (
-        DirectReasoningOperation(context_request_assembler=assembler, reasoning_engine=engine),
+        DirectReasoningOperation(
+            canonical_input_ingestor=ingestor,
+            context_request_assembler=assembler,
+            reasoning_engine=engine,
+        ),
         executor,  # type: ignore[return-value]
     )
 
 
-# --- class shape (§51) ---------------------------------------------------
+# --- class shape -------------------------------------------------------
 
 
 def test_direct_reasoning_operation_has_exact_slots() -> None:
     assert DirectReasoningOperation.__slots__ == (
+        "_canonical_input_ingestor",
         "_context_request_assembler",
         "_reasoning_engine",
     )
@@ -187,41 +216,66 @@ def test_direct_reasoning_operation_instances_have_no_dict() -> None:
 
 
 def test_constructor_is_keyword_only() -> None:
-    assembler = ContextRequestAssembler(state_owner=_owner())
+    owner = _owner()
+    ingestor = CanonicalInputIngestor(state_owner=owner)
+    assembler = ContextRequestAssembler(state_owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError):
-        DirectReasoningOperation(assembler, engine)  # type: ignore[misc]
-    DirectReasoningOperation(context_request_assembler=assembler, reasoning_engine=engine)
+        DirectReasoningOperation(ingestor, assembler, engine)  # type: ignore[misc]
+    DirectReasoningOperation(
+        canonical_input_ingestor=ingestor,
+        context_request_assembler=assembler,
+        reasoning_engine=engine,
+    )
 
 
 def test_constructor_type_hints_are_exact() -> None:
     hints = get_type_hints(DirectReasoningOperation.__init__)
     assert hints == {
+        "canonical_input_ingestor": CanonicalInputIngestor,
         "context_request_assembler": ContextRequestAssembler,
         "reasoning_engine": ReasoningEngine,
         "return": type(None),
     }
 
 
+def test_constructor_rejects_invalid_canonical_input_ingestor() -> None:
+    owner = _owner()
+    assembler = ContextRequestAssembler(state_owner=owner)
+    engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
+    with pytest.raises(TypeError, match="canonical_input_ingestor"):
+        DirectReasoningOperation(
+            canonical_input_ingestor=object(),  # type: ignore[arg-type]
+            context_request_assembler=assembler,
+            reasoning_engine=engine,
+        )
+
+
 def test_constructor_rejects_invalid_context_request_assembler() -> None:
+    owner = _owner()
+    ingestor = CanonicalInputIngestor(state_owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError, match="context_request_assembler"):
         DirectReasoningOperation(
+            canonical_input_ingestor=ingestor,
             context_request_assembler=object(),  # type: ignore[arg-type]
             reasoning_engine=engine,
         )
 
 
 def test_constructor_rejects_invalid_reasoning_engine() -> None:
-    assembler = ContextRequestAssembler(state_owner=_owner())
+    owner = _owner()
+    ingestor = CanonicalInputIngestor(state_owner=owner)
+    assembler = ContextRequestAssembler(state_owner=owner)
     with pytest.raises(TypeError, match="reasoning_engine"):
         DirectReasoningOperation(
+            canonical_input_ingestor=ingestor,
             context_request_assembler=assembler,
             reasoning_engine=object(),  # type: ignore[arg-type]
         )
 
 
-# --- public surface (§52) -------------------------------------------------
+# --- public surface --------------------------------------------------------
 
 
 def test_public_surface_is_only_execute() -> None:
@@ -238,18 +292,19 @@ def test_forbidden_operations_are_not_exposed() -> None:
         "run",
         "invoke",
         "build",
+        "ingest_task",
     ):
         assert not hasattr(DirectReasoningOperation, forbidden)
 
 
-# --- async boundary (§53) -------------------------------------------------
+# --- async boundary ---------------------------------------------------------
 
 
 def test_execute_is_a_coroutine_function() -> None:
     assert inspect.iscoroutinefunction(DirectReasoningOperation.execute)
 
 
-# --- signature (§54, §55) --------------------------------------------------
+# --- signature (unchanged by M0-16) -----------------------------------------
 
 
 def test_execute_has_exact_keyword_only_signature() -> None:
@@ -310,11 +365,14 @@ def test_forbidden_parameters_are_absent() -> None:
         "resource_ref",
         "model_ref",
         "ollama_host",
+        "state_owner",
+        "situation",
+        "workspace",
     ):
         assert forbidden not in parameters
 
 
-# --- happy path (§56) -------------------------------------------------------
+# --- happy path --------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -355,11 +413,13 @@ async def test_happy_path_returns_exact_outcome() -> None:
     assert result is expected_outcome
 
 
-# --- canonical-version propagation (§57) ------------------------------------
+# --- canonical-version propagation (updated for M0-16 ingestion) -----------
 
 
 @pytest.mark.asyncio
 async def test_canonical_versions_propagate_through_the_full_path() -> None:
+    # Workspace is untouched by ingestion; Situation advances by exactly one
+    # version because every execute() call ingests exactly one TASK entry.
     owner = _owner(workspace_version=3, situation_version=7)
     executor = SpyReasoningExecutor(_completed_outcome())
     operation, _ = _operation(owner=owner, executor=executor)
@@ -368,27 +428,123 @@ async def test_canonical_versions_propagate_through_the_full_path() -> None:
 
     stamp = executor.received_requests[0].context.request.context_stamp
     assert stamp.workspace_version == 3
-    assert stamp.situation_version == 7
+    assert stamp.situation_version == 8
     assert stamp.identity_version is ContextVersionMarker.UNMATERIALIZED
     assert stamp.goal_version is ContextVersionMarker.UNMATERIALIZED
     assert stamp.policy_version is ContextVersionMarker.UNMATERIALIZED
 
 
-# --- one-observation proof (§58) --------------------------------------------
+# --- observation cardinality (M0-16: two observations per execute) ---------
 
 
 @pytest.mark.asyncio
-async def test_one_execute_call_causes_exactly_one_canonical_observation() -> None:
+async def test_one_execute_call_causes_exactly_two_canonical_observations() -> None:
+    # Call 1: CanonicalInputIngestor's transition-base observation.
+    # Call 2: ContextRequestAssembler's post-ingestion ContextStamp observation.
     owner = _CountingStateOwner(workspace=_workspace(), situation=_situation())
     executor = SpyReasoningExecutor(_completed_outcome())
     operation, _ = _operation(owner=owner, executor=executor)
 
     await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
 
-    assert owner.current_snapshots_call_count == 1
+    assert owner.current_snapshots_call_count == 2
+    assert owner.replace_situation_call_count == 1
 
 
-# --- caller context-field forwarding (§59) ----------------------------------
+@pytest.mark.asyncio
+async def test_ingestion_replacement_occurs_between_the_two_observations() -> None:
+    owner = _CountingStateOwner(workspace=_workspace(), situation=_situation())
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
+
+    assert owner.call_log == ["current_snapshots", "replace_situation", "current_snapshots"]
+
+
+# --- M0-16 task ingestion -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingest_task_is_called_exactly_once_with_exact_task_ref() -> None:
+    owner = _owner()
+    ingestor = _SpyIngestor(state_owner=owner)
+    assembler = ContextRequestAssembler(state_owner=owner)
+    executor = SpyReasoningExecutor(_completed_outcome())
+    engine = ReasoningEngine(executor=executor)
+    operation = DirectReasoningOperation(
+        canonical_input_ingestor=ingestor,
+        context_request_assembler=assembler,
+        reasoning_engine=engine,
+    )
+
+    await operation.execute(**_execute_kwargs(task_ref="task:exact-value"))  # type: ignore[arg-type]
+
+    assert ingestor.ingest_task_calls == ["task:exact-value"]
+
+
+@pytest.mark.asyncio
+async def test_ingestion_occurs_before_context_request_assembly() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    await operation.execute(**_execute_kwargs(task_ref="task:ordering"))  # type: ignore[arg-type]
+
+    # The ContextStamp observed by the assembler must already reflect the
+    # ingestion that happened before it -- proving the ordering indirectly
+    # through the resulting canonical version, not just call counts.
+    stamp = executor.received_requests[0].context.request.context_stamp
+    assert stamp.situation_version == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_version_is_unaffected_by_ingestion() -> None:
+    owner = _owner(workspace_version=5)
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
+
+    stamp = executor.received_requests[0].context.request.context_stamp
+    assert stamp.workspace_version == 5
+
+
+@pytest.mark.asyncio
+async def test_task_ref_forwarded_unchanged_to_ingestor_and_context_request() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    await operation.execute(**_execute_kwargs(task_ref="task:shared"))  # type: ignore[arg-type]
+
+    request = executor.received_requests[0].context.request
+    assert request.task_ref == "task:shared"
+
+    _, situation = owner.current_snapshots()
+    task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+    assert len(task_entries) == 1
+    assert task_entries[0].content_ref == "task:shared"
+
+
+@pytest.mark.asyncio
+async def test_problem_ref_remains_independent_of_task_ref() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    await operation.execute(**_execute_kwargs(task_ref="task:one", problem_ref="problem:two"))  # type: ignore[arg-type]
+
+    received = executor.received_requests[0]
+    assert received.problem_ref == "problem:two"
+
+    _, situation = owner.current_snapshots()
+    task_entry = situation.entries_of_kind(SituationEntryKind.TASK)[0]
+    assert task_entry.content_ref == "task:one"
+    assert task_entry.content_ref != received.problem_ref
+
+
+# --- caller context-field forwarding ----------------------------------------
 
 
 @pytest.mark.asyncio
@@ -431,7 +587,7 @@ async def test_context_fields_are_forwarded_unchanged() -> None:
     assert request.max_tokens == 512
 
 
-# --- problem forwarding (§60) -----------------------------------------------
+# --- problem forwarding -----------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -449,7 +605,7 @@ async def test_problem_inputs_are_forwarded_unchanged() -> None:
     assert received.problem_statement == "  Solve it.  "
 
 
-# --- budget identity (§61) --------------------------------------------------
+# --- budget identity ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -464,7 +620,7 @@ async def test_budget_identity_is_preserved() -> None:
     assert executor.received_requests[0].budget is budget
 
 
-# --- DIRECT strategy propagation (§62) --------------------------------------
+# --- DIRECT strategy propagation ---------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -478,7 +634,7 @@ async def test_strategy_is_always_direct() -> None:
     assert executor.received_requests[0].strategy is ReasoningStrategy.DIRECT
 
 
-# --- outcome identity (§63) -------------------------------------------------
+# --- outcome identity ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -493,7 +649,7 @@ async def test_outcome_identity_is_preserved() -> None:
     assert result is expected_outcome
 
 
-# --- invalid ContextRequest-field propagation (§64) -------------------------
+# --- invalid ContextRequest-field propagation --------------------------------
 
 
 @pytest.mark.asyncio
@@ -508,7 +664,22 @@ async def test_invalid_context_request_field_propagates_and_skips_executor() -> 
     assert executor.call_count == 0
 
 
-# --- required-slice incompatibility propagation (§65) -----------------------
+@pytest.mark.asyncio
+async def test_context_request_failure_does_not_cause_second_ingestion() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    with pytest.raises(InvalidContextRequestError):
+        await operation.execute(**_execute_kwargs(role=""))  # type: ignore[arg-type]
+
+    # Ingestion already committed (it runs before ContextRequest assembly);
+    # the later failure must not have triggered a compensating re-ingestion.
+    _, situation = owner.current_snapshots()
+    assert len(situation.entries_of_kind(SituationEntryKind.TASK)) == 1
+
+
+# --- required-slice incompatibility propagation ------------------------------
 
 
 @pytest.mark.asyncio
@@ -523,7 +694,7 @@ async def test_required_slice_incompatibility_propagates_and_skips_executor() ->
     assert executor.call_count == 0
 
 
-# --- invalid problem input propagation (§66) --------------------------------
+# --- invalid problem input propagation ---------------------------------------
 
 
 @pytest.mark.asyncio
@@ -538,7 +709,20 @@ async def test_invalid_problem_ref_propagates_and_skips_executor() -> None:
     assert executor.call_count == 0
 
 
-# --- exact ReasoningExecutionError propagation (§67) ------------------------
+@pytest.mark.asyncio
+async def test_reasoning_request_failure_does_not_cause_second_ingestion() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    with pytest.raises(InvalidReasoningRequestError):
+        await operation.execute(**_execute_kwargs(problem_ref=""))  # type: ignore[arg-type]
+
+    _, situation = owner.current_snapshots()
+    assert len(situation.entries_of_kind(SituationEntryKind.TASK)) == 1
+
+
+# --- exact ReasoningExecutionError propagation -------------------------------
 
 
 @pytest.mark.asyncio
@@ -554,7 +738,39 @@ async def test_exact_execution_error_instance_propagates() -> None:
     assert raised.value is expected_error
 
 
-# --- sequential reuse (§69) -------------------------------------------------
+@pytest.mark.asyncio
+async def test_reasoning_execution_error_does_not_cause_second_ingestion() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(ReasoningExecutionError("technical failure"))
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    with pytest.raises(ReasoningExecutionError):
+        await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
+
+    _, situation = owner.current_snapshots()
+    assert len(situation.entries_of_kind(SituationEntryKind.TASK)) == 1
+
+
+# --- ingestion failure prevents later stages ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ingestion_failure_propagates_and_skips_assembler_and_executor() -> None:
+    from noema.cognition.domain.errors import InvalidSituationEntryError
+
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    with pytest.raises(InvalidSituationEntryError):
+        await operation.execute(**_execute_kwargs(task_ref=""))  # type: ignore[arg-type]
+
+    assert executor.call_count == 0
+    _, situation = owner.current_snapshots()
+    assert situation.entries == ()
+
+
+# --- sequential reuse ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -572,7 +788,7 @@ async def test_sequential_operation_reuse_calls_executor_twice() -> None:
     assert executor.received_requests[1].problem_ref == "problem:b"
 
 
-# --- canonical-state evolution (§70) -----------------------------------------
+# --- canonical-state evolution (updated for M0-16 per-execute ingestion) ----
 
 
 @pytest.mark.asyncio
@@ -585,19 +801,22 @@ async def test_canonical_state_evolution_is_reflected_across_operations() -> Non
 
     await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
     first_stamp = executor.received_requests[0].context.request.context_stamp
-    assert first_stamp.workspace_version == workspace.version
-    assert first_stamp.situation_version == situation.version
+    # Situation already advances by one from this call's own ingestion.
+    assert first_stamp.workspace_version == 0
+    assert first_stamp.situation_version == 1
 
-    owner.replace_workspace(replace(workspace, version=workspace.version + 1))
-    owner.replace_situation(replace(situation, version=situation.version + 1))
+    # Simulate an unrelated external Workspace change between operations;
+    # Situation continues to evolve automatically via each call's ingestion.
+    current_workspace, _ = owner.current_snapshots()
+    owner.replace_workspace(replace(current_workspace, version=current_workspace.version + 1))
 
     await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
     second_stamp = executor.received_requests[1].context.request.context_stamp
-    assert second_stamp.workspace_version == workspace.version + 1
-    assert second_stamp.situation_version == situation.version + 1
+    assert second_stamp.workspace_version == 1
+    assert second_stamp.situation_version == 2
 
 
-# --- no direct technology dependency (§71) ----------------------------------
+# --- no direct technology dependency ------------------------------------------
 
 
 def test_module_has_no_model_router_ollama_or_executor_dependency() -> None:
@@ -620,7 +839,17 @@ def test_module_source_does_not_import_model_router_or_ollama() -> None:
     assert "ReasoningExecutor" not in source
 
 
-# --- export (§ application package) -----------------------------------------
+def test_module_has_no_situation_domain_or_state_owner_dependency() -> None:
+    import noema.cognition.application.direct_reasoning_operation as module
+
+    assert not hasattr(module, "SituationEntry")
+    assert not hasattr(module, "SituationEntryKind")
+    assert not hasattr(module, "SituationDelta")
+    assert not hasattr(module, "SituationModel")
+    assert not hasattr(module, "CognitiveStateOwner")
+
+
+# --- export ------------------------------------------------------------------
 
 
 def test_application_package_exports_direct_reasoning_operation() -> None:

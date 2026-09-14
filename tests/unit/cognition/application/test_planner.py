@@ -366,6 +366,7 @@ def test_planner_application_export() -> None:
     from noema.cognition import application
 
     assert application.__all__ == [
+        "CanonicalInputIngestor",
         "CognitiveStateOwner",
         "ContextRequestAssembler",
         "DirectReasoningOperation",
