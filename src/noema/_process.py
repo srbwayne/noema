@@ -1,13 +1,22 @@
 """Process-private configuration and execution realization for the first
-DIRECT one-shot CLI process.
+DIRECT CLI process.
 
 This module is a top-level, process-private outer edge -- not a bounded
 context, not a public API, and not the composition root (``noema.bootstrap``,
 ADR-0029). It resolves already-frozen first-DIRECT process policy (P1
 configuration source, P2 invocation contract, P3 execution shell) into
 exactly the inputs ``noema.bootstrap.open_direct_runtime`` and
-``DirectReasoningOperation.execute`` already require. No bounded-context
-internal package may import this module; only ``noema.main`` does.
+``DirectReasoningOperation.execute`` already require, and realizes one
+process session (M0-17) spanning one or more sequential first-DIRECT
+operations within one open runtime instance. No bounded-context internal
+package may import this module; only ``noema.main`` does.
+
+A process session opens exactly one runtime context and attempts each
+supplied problem statement's operation in order, each with its own freshly
+generated ``task_ref``/``problem_ref``; it is not a conversation -- every
+operation's model input is that operation's problem statement alone, with no
+previous problem or response materialized into it, no session/conversation
+identifier, and no durable or cross-process continuity.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from noema.bootstrap import open_direct_runtime
+from noema.cognition.application import DirectReasoningOperation
 from noema.cognition.domain.budget import CognitiveBudget
 from noema.cognition.domain.context_composition import (
     ContextSensitivity,
@@ -291,33 +301,83 @@ def _load_first_direct_process_configuration(path: Path) -> _FirstDirectProcessC
     )
 
 
-async def _execute_first_direct(
+async def _execute_first_direct_operation(
     *,
-    configuration: _FirstDirectProcessConfiguration,
+    operation: DirectReasoningOperation,
+    policy: _FirstDirectInvocationPolicy,
     problem_statement: str,
 ) -> ReasoningOutcome:
-    """Run exactly one first-DIRECT reasoning operation end to end.
+    """Run exactly one first-DIRECT reasoning operation against ``operation``.
 
-    Opens exactly one ``open_direct_runtime`` context and performs exactly
-    one ``DirectReasoningOperation.execute`` call, mapping every argument
-    per the frozen P2 invocation contract: ``problem_statement`` is the
-    caller-supplied user input; ``task_ref``/``problem_ref`` are two
-    independently generated, opaque UUID4 strings; ``goal_ref`` is fixed to
-    ``None`` (first-process policy, not yet goal-integrated);
+    Generates one fresh ``task_ref`` and one fresh ``problem_ref`` -- two
+    independently generated, opaque UUID4 strings -- immediately before the
+    single ``operation.execute`` call this function makes, and maps every
+    other argument per the frozen P2/M0-17-G2 invocation contract:
+    ``problem_statement`` is forwarded exactly as given; ``goal_ref`` is
+    fixed to ``None`` (first-process policy, not yet goal-integrated);
     ``required_slice_types``, ``forbidden_slice_types``, and
     ``allowed_authorities`` are empty and ``max_age`` is ``None`` (derived
     from the current no-context-retrieval first-DIRECT contract); every
-    other argument comes from the configured ``_FirstDirectInvocationPolicy``.
+    other argument comes from ``policy`` unchanged, including the same
+    immutable ``CognitiveBudget`` object.
 
-    A ``ValueError`` raised while entering the runtime context (for example,
-    an invalid Ollama host) is translated into ``_ProcessConfigurationError``
-    with the original exception preserved as its ``__cause__``. A
-    ``ValueError`` -- or any other exception -- raised by
-    ``operation.execute`` itself is outside that translation's scope and
-    propagates completely unchanged.
+    This function does not open a runtime context, does not decide whether a
+    process session continues past it, and does not catch, translate, or
+    render any exception ``operation.execute`` raises -- every exception
+    propagates completely unchanged, and retains no state from any previous
+    or future call.
     """
     task_ref = str(uuid4())
     problem_ref = str(uuid4())
+
+    return await operation.execute(
+        role=policy.role,
+        task_ref=task_ref,
+        goal_ref=None,
+        mode=policy.mode,
+        required_slice_types=(),
+        forbidden_slice_types=(),
+        max_sensitivity=policy.max_sensitivity,
+        minimum_trust=policy.minimum_trust,
+        allowed_authorities=(),
+        max_age=None,
+        max_tokens=policy.context_max_tokens,
+        problem_ref=problem_ref,
+        problem_statement=problem_statement,
+        budget=policy.cognitive_budget,
+    )
+
+
+async def _execute_first_direct_session(
+    *,
+    configuration: _FirstDirectProcessConfiguration,
+    problem_statements: tuple[str, ...],
+) -> tuple[ReasoningOutcome, ...]:
+    """Run one or more first-DIRECT operations within one runtime session.
+
+    Opens exactly one ``open_direct_runtime`` context for the entire
+    session and attempts each of ``problem_statements``, in order, as one
+    ``_execute_first_direct_operation`` call sharing that same runtime's
+    ``DirectReasoningOperation`` instance and the same resolved
+    ``configuration.invocation_policy``. Operations execute strictly
+    sequentially -- never concurrently -- because canonical cognitive state
+    (M0-16) is sequential successor state, and each operation must observe
+    exactly the state its predecessor produced.
+
+    If every attempted operation returns a valid ``ReasoningOutcome`` --
+    regardless of semantic status, since semantic incompleteness is not a
+    process failure -- this returns all of them as a tuple in the same
+    order as ``problem_statements``. If any attempted operation raises, that
+    exception propagates completely unchanged: no later problem statement is
+    attempted, no partial tuple is returned, and no retry or rollback of any
+    kind is performed. The one open runtime context still closes exactly
+    once in either case, through the ``async with`` block below.
+
+    A ``ValueError`` raised while entering the runtime context (for example,
+    an invalid Ollama host) is translated into ``_ProcessConfigurationError``
+    with the original exception preserved as its ``__cause__``; that
+    translation's scope is exactly runtime entry, never operation execution.
+    """
     policy = configuration.invocation_policy
 
     async with AsyncExitStack() as stack:
@@ -332,19 +392,13 @@ async def _execute_first_direct(
         except ValueError as exc:
             raise _ProcessConfigurationError(str(exc)) from exc
 
-        return await operation.execute(
-            role=policy.role,
-            task_ref=task_ref,
-            goal_ref=None,
-            mode=policy.mode,
-            required_slice_types=(),
-            forbidden_slice_types=(),
-            max_sensitivity=policy.max_sensitivity,
-            minimum_trust=policy.minimum_trust,
-            allowed_authorities=(),
-            max_age=None,
-            max_tokens=policy.context_max_tokens,
-            problem_ref=problem_ref,
-            problem_statement=problem_statement,
-            budget=policy.cognitive_budget,
-        )
+        outcomes = [
+            await _execute_first_direct_operation(
+                operation=operation,
+                policy=policy,
+                problem_statement=problem_statement,
+            )
+            for problem_statement in problem_statements
+        ]
+
+    return tuple(outcomes)

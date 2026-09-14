@@ -1,4 +1,5 @@
 import copy
+import inspect
 import json
 import os
 from datetime import timedelta
@@ -10,7 +11,8 @@ from uuid import UUID
 import pytest
 
 from noema._process import (
-    _execute_first_direct,
+    _execute_first_direct_operation,
+    _execute_first_direct_session,
     _FirstDirectInvocationPolicy,
     _FirstDirectProcessConfiguration,
     _load_first_direct_process_configuration,
@@ -20,7 +22,12 @@ from noema.cognition.domain.budget import CognitiveBudget
 from noema.cognition.domain.context_composition import ContextSensitivity, ContextTrustLevel
 from noema.cognition.domain.errors import InvalidCognitiveBudgetError
 from noema.cognition.domain.modes import CognitiveMode
-from noema.cognition.domain.reasoning import ReasoningOutcome, ReasoningStatus, ReasoningStrategy
+from noema.cognition.domain.reasoning import (
+    InformationNeed,
+    ReasoningOutcome,
+    ReasoningStatus,
+    ReasoningStrategy,
+)
 from noema.cognition.domain.workspace import WorkspaceBudget
 from noema.cognition.ports import ReasoningExecutionError
 from noema.model_router.domain import ModelCapability, ModelResource, ModelResourceCapabilities
@@ -598,7 +605,7 @@ def test_loader_does_not_consult_environment(
     assert os.environ["OLLAMA_HOST"] == "http://from-env:1234"
 
 
-# --- async runner: UUID generation (§107) ------------------------------------
+# --- process session / per-operation helper fixtures (M0-17) ------------------
 
 
 def _configuration() -> _FirstDirectProcessConfiguration:
@@ -643,19 +650,39 @@ def _completed_outcome() -> ReasoningOutcome:
     )
 
 
-class _FakeOperation:
-    """Records every execute() call and returns/raises a fixed result."""
+def _policy() -> _FirstDirectInvocationPolicy:
+    return _configuration().invocation_policy
 
-    def __init__(self, *, result: object = None) -> None:
-        self.result = result if result is not None else _completed_outcome()
+
+def _patch_uuid_sequence(monkeypatch: pytest.MonkeyPatch, count: int) -> list[UUID]:
+    """Patch ``noema._process.uuid4`` to yield a deterministic ascending sequence."""
+    fixed_uuids = [UUID(int=index + 1) for index in range(count)]
+    call_count = 0
+
+    def _fake_uuid4() -> UUID:
+        nonlocal call_count
+        value = fixed_uuids[call_count]
+        call_count += 1
+        return value
+
+    monkeypatch.setattr("noema._process.uuid4", _fake_uuid4)
+    return fixed_uuids
+
+
+class _FakeOperation:
+    """Records every execute() call and returns/raises results in call order."""
+
+    def __init__(self, *, results: list[object] | None = None) -> None:
+        self.results: list[object] = results if results is not None else [_completed_outcome()]
         self.execute_calls: list[dict[str, object]] = []
 
     async def execute(self, **kwargs: object) -> ReasoningOutcome:
+        result = self.results[len(self.execute_calls)]
         self.execute_calls.append(kwargs)
-        if isinstance(self.result, BaseException):
-            raise self.result
-        assert isinstance(self.result, ReasoningOutcome)
-        return self.result
+        if isinstance(result, BaseException):
+            raise result
+        assert isinstance(result, ReasoningOutcome)
+        return result
 
 
 class _FakeRuntimeContext:
@@ -702,83 +729,45 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch, context: _FakeRuntimeContext
     monkeypatch.setattr("noema._process.open_direct_runtime", _fake_open_direct_runtime)
 
 
+# --- per-operation helper: shape and UUID generation (§33) --------------------
+
+
+def test_execute_first_direct_operation_is_a_coroutine_function() -> None:
+    assert inspect.iscoroutinefunction(_execute_first_direct_operation)
+
+
 @pytest.mark.asyncio
-async def test_execute_first_direct_generates_two_distinct_uuid4_calls(
+async def test_execute_first_direct_operation_generates_two_distinct_uuid4_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixed_uuids = [
-        UUID("11111111-1111-1111-1111-111111111111"),
-        UUID("22222222-2222-2222-2222-222222222222"),
-    ]
-    call_count = 0
-
-    def _fake_uuid4() -> UUID:
-        nonlocal call_count
-        value = fixed_uuids[call_count]
-        call_count += 1
-        return value
-
-    monkeypatch.setattr("noema._process.uuid4", _fake_uuid4)
-
+    fixed_uuids = _patch_uuid_sequence(monkeypatch, 2)
     operation = _FakeOperation()
-    context = _FakeRuntimeContext(
-        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+
+    await _execute_first_direct_operation(
+        operation=operation, policy=_policy(), problem_statement="hello"
     )
-    _patch_runtime(monkeypatch, context)
 
-    await _execute_first_direct(configuration=_configuration(), problem_statement="hello")
-
-    assert call_count == 2
+    assert len(operation.execute_calls) == 1
     kwargs = operation.execute_calls[0]
     assert kwargs["task_ref"] == str(fixed_uuids[0])
     assert kwargs["problem_ref"] == str(fixed_uuids[1])
     assert kwargs["task_ref"] != kwargs["problem_ref"]
 
 
-# --- async runner: runtime context (§104/§105) -------------------------------
-
-
 @pytest.mark.asyncio
-async def test_execute_first_direct_opens_exactly_one_runtime_context(
+async def test_execute_first_direct_operation_passes_exact_p2_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_uuid_sequence(monkeypatch, 2)
     operation = _FakeOperation()
-    configuration = _configuration()
-    context = _FakeRuntimeContext(
-        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
-    )
-    _patch_runtime(monkeypatch, context)
+    policy = _policy()
 
-    await _execute_first_direct(configuration=configuration, problem_statement="hello")
-
-    assert context.aenter_call_count == 1
-    assert context.aexit_call_count == 1
-    assert context.workspace_budget is configuration.workspace_budget
-    assert context.ollama_host == configuration.ollama_host
-    assert context.model_resource is configuration.model_resource
-
-
-# --- async runner: execute mapping (§106) ------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_execute_first_direct_passes_exact_p2_mapping(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    operation = _FakeOperation()
-    configuration = _configuration()
-    context = _FakeRuntimeContext(
-        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
-    )
-    _patch_runtime(monkeypatch, context)
-
-    result = await _execute_first_direct(
-        configuration=configuration, problem_statement="Explain this."
+    result = await _execute_first_direct_operation(
+        operation=operation, policy=policy, problem_statement="Explain this."
     )
 
     assert len(operation.execute_calls) == 1
     kwargs = operation.execute_calls[0]
-    policy = configuration.invocation_policy
     assert kwargs["role"] == policy.role
     assert kwargs["goal_ref"] is None
     assert kwargs["mode"] is policy.mode
@@ -791,14 +780,305 @@ async def test_execute_first_direct_passes_exact_p2_mapping(
     assert kwargs["max_tokens"] == policy.context_max_tokens
     assert kwargs["problem_statement"] == "Explain this."
     assert kwargs["budget"] is policy.cognitive_budget
-    assert result is operation.result
-
-
-# --- async runner: entry ValueError translation (§108) -----------------------
+    assert result is operation.results[0]
 
 
 @pytest.mark.asyncio
-async def test_execute_first_direct_translates_runtime_entry_valueerror(
+async def test_execute_first_direct_operation_propagates_exception_unchanged_with_no_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 2)
+    sentinel = ReasoningExecutionError("technical failure")
+    operation = _FakeOperation(results=[sentinel])
+
+    with pytest.raises(ReasoningExecutionError) as raised:
+        await _execute_first_direct_operation(
+            operation=operation, policy=_policy(), problem_statement="hello"
+        )
+
+    assert raised.value is sentinel
+    assert len(operation.execute_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_operation_propagates_operation_valueerror_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 2)
+    sentinel = ValueError("sentinel")
+    operation = _FakeOperation(results=[sentinel])
+
+    with pytest.raises(ValueError) as raised:
+        await _execute_first_direct_operation(
+            operation=operation, policy=_policy(), problem_statement="hello"
+        )
+
+    assert raised.value is sentinel
+    assert not isinstance(raised.value, _ProcessConfigurationError)
+
+
+# --- per-operation helper: repeated/fresh identity (§34) -----------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_operation_generates_fresh_refs_across_repeated_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_uuids = _patch_uuid_sequence(monkeypatch, 4)
+    operation = _FakeOperation(results=[_completed_outcome(), _completed_outcome()])
+    policy = _policy()
+
+    await _execute_first_direct_operation(
+        operation=operation, policy=policy, problem_statement="same problem"
+    )
+    await _execute_first_direct_operation(
+        operation=operation, policy=policy, problem_statement="same problem"
+    )
+
+    assert len(operation.execute_calls) == 2
+    first_kwargs, second_kwargs = operation.execute_calls
+    assert first_kwargs["task_ref"] == str(fixed_uuids[0])
+    assert first_kwargs["problem_ref"] == str(fixed_uuids[1])
+    assert second_kwargs["task_ref"] == str(fixed_uuids[2])
+    assert second_kwargs["problem_ref"] == str(fixed_uuids[3])
+    assert {
+        first_kwargs["task_ref"],
+        first_kwargs["problem_ref"],
+        second_kwargs["task_ref"],
+        second_kwargs["problem_ref"],
+    } == {str(value) for value in fixed_uuids}
+
+
+# --- session executor: success (§35) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_opens_exactly_one_runtime_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 4)
+    operation = _FakeOperation(results=[_completed_outcome(), _completed_outcome()])
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    await _execute_first_direct_session(
+        configuration=configuration, problem_statements=("first", "second")
+    )
+
+    assert context.aenter_call_count == 1
+    assert context.aexit_call_count == 1
+    assert context.workspace_budget is configuration.workspace_budget
+    assert context.ollama_host == configuration.ollama_host
+    assert context.model_resource is configuration.model_resource
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_uses_same_policy_for_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 6)
+    operation = _FakeOperation(
+        results=[_completed_outcome(), _completed_outcome(), _completed_outcome()]
+    )
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    await _execute_first_direct_session(
+        configuration=configuration, problem_statements=("a", "b", "c")
+    )
+
+    assert len(operation.execute_calls) == 3
+    policy = configuration.invocation_policy
+    for kwargs in operation.execute_calls:
+        assert kwargs["role"] == policy.role
+        assert kwargs["mode"] is policy.mode
+        assert kwargs["max_sensitivity"] is policy.max_sensitivity
+        assert kwargs["minimum_trust"] is policy.minimum_trust
+        assert kwargs["max_tokens"] == policy.context_max_tokens
+        assert kwargs["budget"] is policy.cognitive_budget
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_executes_in_exact_problem_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 6)
+    operation = _FakeOperation(
+        results=[_completed_outcome(), _completed_outcome(), _completed_outcome()]
+    )
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    await _execute_first_direct_session(
+        configuration=configuration, problem_statements=("first", "second", "third")
+    )
+
+    assert [kwargs["problem_statement"] for kwargs in operation.execute_calls] == [
+        "first",
+        "second",
+        "third",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_returns_ordered_outcome_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 4)
+    first_outcome = _completed_outcome()
+    second_outcome = _completed_outcome()
+    operation = _FakeOperation(results=[first_outcome, second_outcome])
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    result = await _execute_first_direct_session(
+        configuration=configuration, problem_statements=("first", "second")
+    )
+
+    assert isinstance(result, tuple)
+    assert result == (first_outcome, second_outcome)
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_generates_fresh_refs_per_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_uuids = _patch_uuid_sequence(monkeypatch, 4)
+    operation = _FakeOperation(results=[_completed_outcome(), _completed_outcome()])
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    await _execute_first_direct_session(
+        configuration=configuration,
+        problem_statements=("same problem", "same problem"),
+    )
+
+    first_kwargs, second_kwargs = operation.execute_calls
+    assert first_kwargs["task_ref"] == str(fixed_uuids[0])
+    assert first_kwargs["problem_ref"] == str(fixed_uuids[1])
+    assert second_kwargs["task_ref"] == str(fixed_uuids[2])
+    assert second_kwargs["problem_ref"] == str(fixed_uuids[3])
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_with_one_problem_executes_exactly_one_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 2)
+    operation = _FakeOperation()
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    result = await _execute_first_direct_session(
+        configuration=configuration, problem_statements=("hello",)
+    )
+
+    assert len(operation.execute_calls) == 1
+    assert result == (operation.results[0],)
+
+
+# --- session executor: failure (§36) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_reasoning_execution_error_aborts_at_k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 6)
+    sentinel = ReasoningExecutionError("technical failure")
+    operation = _FakeOperation(results=[_completed_outcome(), sentinel])
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    with pytest.raises(ReasoningExecutionError) as raised:
+        await _execute_first_direct_session(
+            configuration=configuration,
+            problem_statements=("first", "second", "third"),
+        )
+
+    assert raised.value is sentinel
+    assert len(operation.execute_calls) == 2
+    assert context.aenter_call_count == 1
+    assert context.aexit_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_domain_error_aborts_at_k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 6)
+    sentinel = DomainError("domain invariant violated")
+    operation = _FakeOperation(results=[_completed_outcome(), sentinel])
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    with pytest.raises(DomainError) as raised:
+        await _execute_first_direct_session(
+            configuration=configuration,
+            problem_statements=("first", "second", "third"),
+        )
+
+    assert raised.value is sentinel
+    assert len(operation.execute_calls) == 2
+    assert context.aenter_call_count == 1
+    assert context.aexit_call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_unexpected_valueerror_aborts_at_k(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 6)
+    sentinel = ValueError("unexpected defect")
+    operation = _FakeOperation(results=[_completed_outcome(), sentinel])
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    with pytest.raises(ValueError) as raised:
+        await _execute_first_direct_session(
+            configuration=configuration,
+            problem_statements=("first", "second", "third"),
+        )
+
+    assert raised.value is sentinel
+    assert not isinstance(raised.value, _ProcessConfigurationError)
+    assert len(operation.execute_calls) == 2
+    assert context.aenter_call_count == 1
+    assert context.aexit_call_count == 1
+
+
+# --- session executor: runtime-entry translation (§37) -------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_translates_runtime_entry_valueerror(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original = ValueError("ollama_host must be a non-empty string")
@@ -811,68 +1091,50 @@ async def test_execute_first_direct_translates_runtime_entry_valueerror(
     _patch_runtime(monkeypatch, context)
 
     with pytest.raises(_ProcessConfigurationError) as raised:
-        await _execute_first_direct(configuration=_configuration(), problem_statement="hello")
+        await _execute_first_direct_session(
+            configuration=_configuration(), problem_statements=("hello",)
+        )
 
     assert str(raised.value) == str(original)
     assert raised.value.__cause__ is original
 
 
-# --- async runner: operation ValueError propagation (§109/§110) --------------
+# --- session executor: valid semantic statuses (§38) ---------------------------
 
 
 @pytest.mark.asyncio
-async def test_execute_first_direct_propagates_operation_valueerror_unchanged(
+async def test_execute_first_direct_session_continues_after_non_completed_valid_outcomes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sentinel = ValueError("sentinel")
-    operation = _FakeOperation(result=sentinel)
+    _patch_uuid_sequence(monkeypatch, 8)
+    partial_outcome = ReasoningOutcome(
+        problem_ref="problem:partial",
+        strategy=ReasoningStrategy.DIRECT,
+        status=ReasoningStatus.PARTIAL,
+        conclusion="a partial answer",
+        reason_summary="partial reasoning",
+        information_needs=(InformationNeed(subject_ref="internal-ref-x", description="clarify"),),
+    )
+    unresolved_outcome = ReasoningOutcome(
+        problem_ref="problem:unresolved",
+        strategy=ReasoningStrategy.DIRECT,
+        status=ReasoningStatus.UNRESOLVED,
+        conclusion=None,
+        reason_summary="could not resolve",
+        information_needs=(),
+    )
+    completed_outcome = _completed_outcome()
+    operation = _FakeOperation(results=[partial_outcome, unresolved_outcome, completed_outcome])
+    configuration = _configuration()
     context = _FakeRuntimeContext(
         workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
     )
     _patch_runtime(monkeypatch, context)
 
-    with pytest.raises(ValueError) as raised:
-        await _execute_first_direct(configuration=_configuration(), problem_statement="hello")
-
-    assert raised.value is sentinel
-    assert not isinstance(raised.value, _ProcessConfigurationError)
-    assert context.aexit_call_count == 1
-
-
-# --- async runner: technical/domain propagation (§111/§112) ------------------
-
-
-@pytest.mark.asyncio
-async def test_execute_first_direct_does_not_catch_reasoning_execution_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sentinel = ReasoningExecutionError("technical failure")
-    operation = _FakeOperation(result=sentinel)
-    context = _FakeRuntimeContext(
-        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    result = await _execute_first_direct_session(
+        configuration=configuration,
+        problem_statements=("first", "second", "third"),
     )
-    _patch_runtime(monkeypatch, context)
 
-    with pytest.raises(ReasoningExecutionError) as raised:
-        await _execute_first_direct(configuration=_configuration(), problem_statement="hello")
-
-    assert raised.value is sentinel
-    assert context.aexit_call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_execute_first_direct_does_not_catch_domain_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sentinel = DomainError("domain invariant violated")
-    operation = _FakeOperation(result=sentinel)
-    context = _FakeRuntimeContext(
-        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
-    )
-    _patch_runtime(monkeypatch, context)
-
-    with pytest.raises(DomainError) as raised:
-        await _execute_first_direct(configuration=_configuration(), problem_statement="hello")
-
-    assert raised.value is sentinel
-    assert context.aexit_call_count == 1
+    assert result == (partial_outcome, unresolved_outcome, completed_outcome)
+    assert len(operation.execute_calls) == 3
