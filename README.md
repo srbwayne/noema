@@ -13,7 +13,8 @@ The V1 is a modular monolith organized by bounded context and protected by ports
 - M0 project foundation using Python 3.13, `uv`, and a `src` layout
 - Official bounded-context package boundaries
 - The first-DIRECT reasoning object graph (`src/noema/bootstrap.py`)
-- A one-shot first-DIRECT CLI process entrypoint (`uv run noema`, below)
+- A first-DIRECT CLI process entrypoint supporting one or more sequential
+  operations within one runtime invocation (`uv run noema`, below)
 - Initial automated domain dependency rule
 - Pytest, Ruff, and mypy configuration
 
@@ -34,23 +35,31 @@ Install Python 3.13 and [`uv`](https://docs.astral.sh/uv/), then synchronize the
 uv sync
 ```
 
-Run one first-DIRECT reasoning operation:
+Run one or more sequential first-DIRECT reasoning operations:
 
 ```console
-uv run noema --config PATH "PROBLEM"
+uv run noema --config PATH "PROBLEM" ["PROBLEM" ...]
 ```
 
 - `--config` is required: an explicit path to a first-DIRECT process configuration TOML file (see
   [Configuration](#configuration) below). There is no default path, no environment-variable
   fallback, and no configuration search.
-- `PROBLEM` is one required positional argument: the problem statement for this one reasoning
-  operation.
-- The command performs exactly one reasoning operation against the configured Ollama endpoint and
-  model, then exits. Noema does not auto-discover or auto-pull models -- the Ollama endpoint and
-  model named in the configuration must already be available.
-- Exit code `0` means a valid reasoning outcome was produced (regardless of its semantic
-  completeness); `1` means the underlying model execution failed technically; `2` means the CLI
-  invocation, the configuration file, or the resolved configuration values were invalid.
+- `PROBLEM` accepts one or more positional arguments. One problem remains a fully valid
+  invocation. Given more than one, the process opens a single runtime instance and executes each
+  problem's operation sequentially, in the exact order given, against the configured Ollama
+  endpoint and model, then exits. Noema does not auto-discover or auto-pull models -- the Ollama
+  endpoint and model named in the configuration must already be available.
+- Multiple problems share the same runtime instance and canonical state continuity, but each
+  model call still receives only its current problem statement; this does not add
+  conversational-history materialization -- no problem observes any earlier problem or response.
+- On success, each problem's outcome is rendered in order, separated by exactly one blank line;
+  a single problem's output is unchanged from a one-problem invocation. The first raised
+  exception aborts the remaining problems immediately: no output is rendered for a failed
+  invocation, and problems after the failing one are never attempted.
+- Exit code `0` means every attempted operation produced a valid reasoning outcome (regardless of
+  its semantic completeness); `1` means an attempted operation's underlying model execution
+  failed technically; `2` means the CLI invocation, the configuration file, or the resolved
+  configuration values were invalid.
 
 Run `uv run noema --help` for the exact CLI usage text.
 

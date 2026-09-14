@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 
 from noema._process import (
-    _execute_first_direct,
+    _execute_first_direct_session,
     _load_first_direct_process_configuration,
     _ProcessConfigurationError,
 )
@@ -22,7 +22,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the first-DIRECT CLI process."""
     parser = argparse.ArgumentParser(
         prog="noema",
-        description="Run one first-DIRECT Noema reasoning operation.",
+        description="Run one or more sequential first-DIRECT Noema reasoning operations.",
     )
     parser.add_argument(
         "--config",
@@ -31,8 +31,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to an explicit first-DIRECT process configuration TOML file.",
     )
     parser.add_argument(
-        "problem",
-        help="The problem statement for this one reasoning operation.",
+        "problems",
+        nargs="+",
+        help="One or more problem statements, executed sequentially in the given order.",
     )
     return parser
 
@@ -57,12 +58,18 @@ def _render_outcome(outcome: ReasoningOutcome) -> None:
 
 
 def main() -> int:
-    """Run one first-DIRECT process invocation and return its exit status.
+    """Run one first-DIRECT process session and return its exit status.
 
-    ``0`` for a valid ``ReasoningOutcome`` of any semantic status, ``1`` for
-    a technical ``ReasoningExecutionError``, and ``2`` for a CLI,
-    configuration, or invocation-construction failure. Any other exception
-    is an unexpected defect and propagates with its traceback intact.
+    A session attempts one or more problem statements, in order, within one
+    runtime instance. ``0`` means every attempted operation returned a valid
+    ``ReasoningOutcome`` (regardless of semantic status -- semantic
+    incompleteness is not a process failure), ``1`` means an attempted
+    operation raised a technical ``ReasoningExecutionError``, and ``2``
+    means a CLI, configuration, or invocation-construction failure. The
+    first raised exception aborts the remaining session immediately: no
+    later problem statement is attempted, and no output is rendered for a
+    failed session. Any other exception is an unexpected defect and
+    propagates with its traceback intact.
     """
     parser = _build_parser()
     args = parser.parse_args()
@@ -74,10 +81,10 @@ def main() -> int:
         return 2
 
     try:
-        outcome = asyncio.run(
-            _execute_first_direct(
+        outcomes = asyncio.run(
+            _execute_first_direct_session(
                 configuration=configuration,
-                problem_statement=args.problem,
+                problem_statements=tuple(args.problems),
             )
         )
     except ReasoningExecutionError as exc:
@@ -87,7 +94,10 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    _render_outcome(outcome)
+    for index, outcome in enumerate(outcomes):
+        if index:
+            print()
+        _render_outcome(outcome)
     return 0
 
 
