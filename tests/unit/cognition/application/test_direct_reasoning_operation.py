@@ -90,33 +90,55 @@ class _CountingStateOwner(CognitiveStateOwner):
 
 
 class _SpyIngestor(CanonicalInputIngestor):
-    """A CanonicalInputIngestor that records every ingest_task call."""
+    """A CanonicalInputIngestor that records every ingest_task call.
 
-    __slots__ = ("ingest_task_calls",)
+    ``shared_events``, when supplied, is a single list this spy appends to
+    live, at the exact moment ``ingest_task`` runs -- shared with another
+    spy so relative call order between two independent collaborators can be
+    proven, not just each collaborator's own occurrence.
+    """
 
-    def __init__(self, *, state_owner: CognitiveStateOwner) -> None:
+    __slots__ = ("ingest_task_calls", "_shared_events")
+
+    def __init__(
+        self,
+        *,
+        state_owner: CognitiveStateOwner,
+        shared_events: list[str] | None = None,
+    ) -> None:
         super().__init__(state_owner=state_owner)
         self.ingest_task_calls: list[str] = []
+        self._shared_events = shared_events
 
     def ingest_task(self, *, task_ref: str) -> None:
         self.ingest_task_calls.append(task_ref)
+        if self._shared_events is not None:
+            self._shared_events.append("ingest")
         super().ingest_task(task_ref=task_ref)
 
 
 class _SpyContentAuthority(RuntimeContentReferenceAuthority):
-    """A RuntimeContentReferenceAuthority that records register/resolve calls."""
+    """A RuntimeContentReferenceAuthority that records register/resolve calls.
 
-    __slots__ = ("register_calls", "resolve_calls", "call_log")
+    ``shared_events``, when supplied, is the same live-appended list a
+    ``_SpyIngestor`` may also be given, so the two collaborators' calls can
+    be observed on one shared, ordered timeline.
+    """
 
-    def __init__(self) -> None:
+    __slots__ = ("register_calls", "resolve_calls", "call_log", "_shared_events")
+
+    def __init__(self, *, shared_events: list[str] | None = None) -> None:
         super().__init__()
         self.register_calls: list[tuple[str, str]] = []
         self.resolve_calls: list[str] = []
         self.call_log: list[str] = []
+        self._shared_events = shared_events
 
     def register(self, *, content_ref: str, payload: str) -> None:
         self.register_calls.append((content_ref, payload))
         self.call_log.append("register")
+        if self._shared_events is not None:
+            self._shared_events.append("register")
         super().register(content_ref=content_ref, payload=payload)
 
     def resolve(self, *, content_ref: str) -> str:
@@ -624,9 +646,14 @@ async def test_register_is_called_exactly_once_with_exact_task_ref_and_problem_s
 
 @pytest.mark.asyncio
 async def test_registration_occurs_before_ingestion() -> None:
+    # A single shared, live-appended event list -- not two independent
+    # per-spy logs -- is what actually proves relative order: if production
+    # called ingest_task before register, this list would read
+    # ["ingest", "register"] instead, and the assertion below would fail.
+    events: list[str] = []
     owner = _owner()
-    authority = _SpyContentAuthority()
-    ingestor = _SpyIngestor(state_owner=owner)
+    authority = _SpyContentAuthority(shared_events=events)
+    ingestor = _SpyIngestor(state_owner=owner, shared_events=events)
     assembler = ContextRequestAssembler(state_owner=owner)
     executor = SpyReasoningExecutor(_completed_outcome())
     engine = ReasoningEngine(executor=executor)
@@ -639,6 +666,7 @@ async def test_registration_occurs_before_ingestion() -> None:
 
     await operation.execute(**_execute_kwargs(task_ref="task:order"))  # type: ignore[arg-type]
 
+    assert events == ["register", "ingest"]
     assert authority.call_log == ["register"]
     assert ingestor.ingest_task_calls == ["task:order"]
 
