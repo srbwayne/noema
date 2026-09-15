@@ -10,6 +10,11 @@ from .direct_reasoning_operation import DirectReasoningOperation
 from .direct_reasoning_request_assembler import assemble_direct_reasoning_request
 from .planner import Planner
 from .reasoning_engine import ReasoningEngine
+from .runtime_content_reference_authority import (
+    RuntimeContentReferenceAuthority,
+    RuntimeContentReferenceConflictError,
+    RuntimeContentReferenceNotFoundError,
+)
 
 __all__ = [
     "CanonicalInputIngestor",
@@ -19,5 +24,8 @@ __all__ = [
     "InvalidCognitiveStateReplacementError",
     "Planner",
     "ReasoningEngine",
+    "RuntimeContentReferenceAuthority",
+    "RuntimeContentReferenceConflictError",
+    "RuntimeContentReferenceNotFoundError",
     "assemble_direct_reasoning_request",
 ]
