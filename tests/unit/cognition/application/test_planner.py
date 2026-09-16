@@ -373,5 +373,8 @@ def test_planner_application_export() -> None:
         "InvalidCognitiveStateReplacementError",
         "Planner",
         "ReasoningEngine",
+        "RuntimeContentReferenceAuthority",
+        "RuntimeContentReferenceConflictError",
+        "RuntimeContentReferenceNotFoundError",
         "assemble_direct_reasoning_request",
     ]

@@ -11,6 +11,8 @@ from noema.cognition.application import (
     ContextRequestAssembler,
     DirectReasoningOperation,
     ReasoningEngine,
+    RuntimeContentReferenceAuthority,
+    RuntimeContentReferenceConflictError,
 )
 from noema.cognition.application.cognitive_state_owner import CognitiveStateOwner
 from noema.cognition.domain.budget import CognitiveBudget
@@ -88,17 +90,61 @@ class _CountingStateOwner(CognitiveStateOwner):
 
 
 class _SpyIngestor(CanonicalInputIngestor):
-    """A CanonicalInputIngestor that records every ingest_task call."""
+    """A CanonicalInputIngestor that records every ingest_task call.
 
-    __slots__ = ("ingest_task_calls",)
+    ``shared_events``, when supplied, is a single list this spy appends to
+    live, at the exact moment ``ingest_task`` runs -- shared with another
+    spy so relative call order between two independent collaborators can be
+    proven, not just each collaborator's own occurrence.
+    """
 
-    def __init__(self, *, state_owner: CognitiveStateOwner) -> None:
+    __slots__ = ("ingest_task_calls", "_shared_events")
+
+    def __init__(
+        self,
+        *,
+        state_owner: CognitiveStateOwner,
+        shared_events: list[str] | None = None,
+    ) -> None:
         super().__init__(state_owner=state_owner)
         self.ingest_task_calls: list[str] = []
+        self._shared_events = shared_events
 
     def ingest_task(self, *, task_ref: str) -> None:
         self.ingest_task_calls.append(task_ref)
+        if self._shared_events is not None:
+            self._shared_events.append("ingest")
         super().ingest_task(task_ref=task_ref)
+
+
+class _SpyContentAuthority(RuntimeContentReferenceAuthority):
+    """A RuntimeContentReferenceAuthority that records register/resolve calls.
+
+    ``shared_events``, when supplied, is the same live-appended list a
+    ``_SpyIngestor`` may also be given, so the two collaborators' calls can
+    be observed on one shared, ordered timeline.
+    """
+
+    __slots__ = ("register_calls", "resolve_calls", "call_log", "_shared_events")
+
+    def __init__(self, *, shared_events: list[str] | None = None) -> None:
+        super().__init__()
+        self.register_calls: list[tuple[str, str]] = []
+        self.resolve_calls: list[str] = []
+        self.call_log: list[str] = []
+        self._shared_events = shared_events
+
+    def register(self, *, content_ref: str, payload: str) -> None:
+        self.register_calls.append((content_ref, payload))
+        self.call_log.append("register")
+        if self._shared_events is not None:
+            self._shared_events.append("register")
+        super().register(content_ref=content_ref, payload=payload)
+
+    def resolve(self, *, content_ref: str) -> str:
+        self.resolve_calls.append(content_ref)
+        self.call_log.append("resolve")
+        return super().resolve(content_ref=content_ref)
 
 
 class SpyReasoningExecutor:
@@ -183,13 +229,19 @@ def _completed_outcome(
 
 
 def _operation(
-    *, owner: CognitiveStateOwner, executor: object
+    *,
+    owner: CognitiveStateOwner,
+    executor: object,
+    authority: RuntimeContentReferenceAuthority | None = None,
 ) -> tuple[DirectReasoningOperation, "SpyReasoningExecutor"]:
     ingestor = CanonicalInputIngestor(state_owner=owner)
     assembler = ContextRequestAssembler(state_owner=owner)
     engine = ReasoningEngine(executor=executor)  # type: ignore[arg-type]
     return (
         DirectReasoningOperation(
+            runtime_content_authority=authority
+            if authority is not None
+            else RuntimeContentReferenceAuthority(),
             canonical_input_ingestor=ingestor,
             context_request_assembler=assembler,
             reasoning_engine=engine,
@@ -203,6 +255,7 @@ def _operation(
 
 def test_direct_reasoning_operation_has_exact_slots() -> None:
     assert DirectReasoningOperation.__slots__ == (
+        "_runtime_content_authority",
         "_canonical_input_ingestor",
         "_context_request_assembler",
         "_reasoning_engine",
@@ -217,12 +270,14 @@ def test_direct_reasoning_operation_instances_have_no_dict() -> None:
 
 def test_constructor_is_keyword_only() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     ingestor = CanonicalInputIngestor(state_owner=owner)
     assembler = ContextRequestAssembler(state_owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError):
-        DirectReasoningOperation(ingestor, assembler, engine)  # type: ignore[misc]
+        DirectReasoningOperation(authority, ingestor, assembler, engine)  # type: ignore[misc]
     DirectReasoningOperation(
+        runtime_content_authority=authority,
         canonical_input_ingestor=ingestor,
         context_request_assembler=assembler,
         reasoning_engine=engine,
@@ -232,6 +287,7 @@ def test_constructor_is_keyword_only() -> None:
 def test_constructor_type_hints_are_exact() -> None:
     hints = get_type_hints(DirectReasoningOperation.__init__)
     assert hints == {
+        "runtime_content_authority": RuntimeContentReferenceAuthority,
         "canonical_input_ingestor": CanonicalInputIngestor,
         "context_request_assembler": ContextRequestAssembler,
         "reasoning_engine": ReasoningEngine,
@@ -239,12 +295,28 @@ def test_constructor_type_hints_are_exact() -> None:
     }
 
 
+def test_constructor_rejects_invalid_runtime_content_authority() -> None:
+    owner = _owner()
+    ingestor = CanonicalInputIngestor(state_owner=owner)
+    assembler = ContextRequestAssembler(state_owner=owner)
+    engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
+    with pytest.raises(TypeError, match="runtime_content_authority"):
+        DirectReasoningOperation(
+            runtime_content_authority=object(),  # type: ignore[arg-type]
+            canonical_input_ingestor=ingestor,
+            context_request_assembler=assembler,
+            reasoning_engine=engine,
+        )
+
+
 def test_constructor_rejects_invalid_canonical_input_ingestor() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     assembler = ContextRequestAssembler(state_owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError, match="canonical_input_ingestor"):
         DirectReasoningOperation(
+            runtime_content_authority=authority,
             canonical_input_ingestor=object(),  # type: ignore[arg-type]
             context_request_assembler=assembler,
             reasoning_engine=engine,
@@ -253,10 +325,12 @@ def test_constructor_rejects_invalid_canonical_input_ingestor() -> None:
 
 def test_constructor_rejects_invalid_context_request_assembler() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     ingestor = CanonicalInputIngestor(state_owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError, match="context_request_assembler"):
         DirectReasoningOperation(
+            runtime_content_authority=authority,
             canonical_input_ingestor=ingestor,
             context_request_assembler=object(),  # type: ignore[arg-type]
             reasoning_engine=engine,
@@ -265,10 +339,12 @@ def test_constructor_rejects_invalid_context_request_assembler() -> None:
 
 def test_constructor_rejects_invalid_reasoning_engine() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     ingestor = CanonicalInputIngestor(state_owner=owner)
     assembler = ContextRequestAssembler(state_owner=owner)
     with pytest.raises(TypeError, match="reasoning_engine"):
         DirectReasoningOperation(
+            runtime_content_authority=authority,
             canonical_input_ingestor=ingestor,
             context_request_assembler=assembler,
             reasoning_engine=object(),  # type: ignore[arg-type]
@@ -293,6 +369,11 @@ def test_forbidden_operations_are_not_exposed() -> None:
         "invoke",
         "build",
         "ingest_task",
+        "register",
+        "resolve",
+        "resolve_content",
+        "content_authority",
+        "registered_content",
     ):
         assert not hasattr(DirectReasoningOperation, forbidden)
 
@@ -468,11 +549,13 @@ async def test_ingestion_replacement_occurs_between_the_two_observations() -> No
 @pytest.mark.asyncio
 async def test_ingest_task_is_called_exactly_once_with_exact_task_ref() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     ingestor = _SpyIngestor(state_owner=owner)
     assembler = ContextRequestAssembler(state_owner=owner)
     executor = SpyReasoningExecutor(_completed_outcome())
     engine = ReasoningEngine(executor=executor)
     operation = DirectReasoningOperation(
+        runtime_content_authority=authority,
         canonical_input_ingestor=ingestor,
         context_request_assembler=assembler,
         reasoning_engine=engine,
@@ -542,6 +625,211 @@ async def test_problem_ref_remains_independent_of_task_ref() -> None:
     task_entry = situation.entries_of_kind(SituationEntryKind.TASK)[0]
     assert task_entry.content_ref == "task:one"
     assert task_entry.content_ref != received.problem_ref
+
+
+# --- M0-18 runtime content registration --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_register_is_called_exactly_once_with_exact_task_ref_and_problem_statement() -> None:
+    owner = _owner()
+    authority = _SpyContentAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    await operation.execute(
+        **_execute_kwargs(task_ref="task:content", problem_statement="Exact payload.")
+    )  # type: ignore[arg-type]
+
+    assert authority.register_calls == [("task:content", "Exact payload.")]
+
+
+@pytest.mark.asyncio
+async def test_registration_occurs_before_ingestion() -> None:
+    # A single shared, live-appended event list -- not two independent
+    # per-spy logs -- is what actually proves relative order: if production
+    # called ingest_task before register, this list would read
+    # ["ingest", "register"] instead, and the assertion below would fail.
+    events: list[str] = []
+    owner = _owner()
+    authority = _SpyContentAuthority(shared_events=events)
+    ingestor = _SpyIngestor(state_owner=owner, shared_events=events)
+    assembler = ContextRequestAssembler(state_owner=owner)
+    executor = SpyReasoningExecutor(_completed_outcome())
+    engine = ReasoningEngine(executor=executor)
+    operation = DirectReasoningOperation(
+        runtime_content_authority=authority,
+        canonical_input_ingestor=ingestor,
+        context_request_assembler=assembler,
+        reasoning_engine=engine,
+    )
+
+    await operation.execute(**_execute_kwargs(task_ref="task:order"))  # type: ignore[arg-type]
+
+    assert events == ["register", "ingest"]
+    assert authority.call_log == ["register"]
+    assert ingestor.ingest_task_calls == ["task:order"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_is_never_called_by_execute() -> None:
+    owner = _owner()
+    authority = _SpyContentAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
+
+    assert authority.resolve_calls == []
+
+
+@pytest.mark.asyncio
+async def test_registration_conflict_propagates_and_skips_ingestion_and_executor() -> None:
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    authority.register(content_ref="task:conflict", payload="original payload")
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    with pytest.raises(RuntimeContentReferenceConflictError):
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:conflict", problem_statement="different payload")
+        )  # type: ignore[arg-type]
+
+    assert executor.call_count == 0
+    _, situation = owner.current_snapshots()
+    assert situation.entries == ()
+    assert authority.resolve(content_ref="task:conflict") == "original payload"
+
+
+@pytest.mark.asyncio
+async def test_registration_type_error_propagates_and_skips_ingestion_and_executor() -> None:
+    owner = _owner()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor)
+
+    with pytest.raises(TypeError):
+        await operation.execute(**_execute_kwargs(problem_statement=object()))  # type: ignore[arg-type]
+
+    assert executor.call_count == 0
+    _, situation = owner.current_snapshots()
+    assert situation.entries == ()
+
+
+@pytest.mark.asyncio
+async def test_blank_task_ref_leaves_orphan_registration_and_raises_ingestion_error() -> None:
+    from noema.cognition.domain.errors import InvalidSituationEntryError
+
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    with pytest.raises(InvalidSituationEntryError):
+        await operation.execute(
+            **_execute_kwargs(task_ref="", problem_statement="orphaned payload")
+        )  # type: ignore[arg-type]
+
+    assert executor.call_count == 0
+    _, situation = owner.current_snapshots()
+    assert situation.entries == ()
+    assert authority.resolve(content_ref="") == "orphaned payload"
+
+
+@pytest.mark.asyncio
+async def test_blank_problem_statement_retains_registration_and_canonical_task() -> None:
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    with pytest.raises(InvalidReasoningRequestError):
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:blank-problem", problem_statement="   ")
+        )  # type: ignore[arg-type]
+
+    assert executor.call_count == 0
+    assert authority.resolve(content_ref="task:blank-problem") == "   "
+    _, situation = owner.current_snapshots()
+    task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+    assert len(task_entries) == 1
+    assert task_entries[0].content_ref == "task:blank-problem"
+
+
+@pytest.mark.asyncio
+async def test_same_ref_same_payload_second_execute_still_attempts_ingestion() -> None:
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    await operation.execute(
+        **_execute_kwargs(task_ref="task:repeat", problem_statement="same payload")
+    )  # type: ignore[arg-type]
+    await operation.execute(
+        **_execute_kwargs(task_ref="task:repeat", problem_statement="same payload")
+    )  # type: ignore[arg-type]
+
+    assert executor.call_count == 2
+    _, situation = owner.current_snapshots()
+    task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+    assert len(task_entries) == 2
+    assert all(entry.content_ref == "task:repeat" for entry in task_entries)
+
+
+@pytest.mark.asyncio
+async def test_same_ref_different_payload_second_execute_conflicts_before_ingestion() -> None:
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    await operation.execute(
+        **_execute_kwargs(task_ref="task:repeat", problem_statement="first payload")
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeContentReferenceConflictError):
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:repeat", problem_statement="second payload")
+        )  # type: ignore[arg-type]
+
+    assert executor.call_count == 1
+    _, situation = owner.current_snapshots()
+    task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+    assert len(task_entries) == 1
+    assert authority.resolve(content_ref="task:repeat") == "first payload"
+
+
+@pytest.mark.asyncio
+async def test_downstream_failures_retain_registration() -> None:
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    with pytest.raises(InvalidContextRequestError):
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:context-fail", role="", problem_statement="kept")
+        )  # type: ignore[arg-type]
+
+    assert authority.resolve(content_ref="task:context-fail") == "kept"
+
+
+@pytest.mark.asyncio
+async def test_sequential_executions_retain_both_registrations_on_same_authority() -> None:
+    owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
+    executor = SpyReasoningExecutor(_completed_outcome())
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
+
+    await operation.execute(**_execute_kwargs(task_ref="task:1", problem_statement="first"))  # type: ignore[arg-type]
+    await operation.execute(**_execute_kwargs(task_ref="task:2", problem_statement="second"))  # type: ignore[arg-type]
+
+    assert authority.resolve(content_ref="task:1") == "first"
+    assert authority.resolve(content_ref="task:2") == "second"
+    _, situation = owner.current_snapshots()
+    task_refs = {entry.content_ref for entry in situation.entries_of_kind(SituationEntryKind.TASK)}
+    assert task_refs == {"task:1", "task:2"}
 
 
 # --- caller context-field forwarding ----------------------------------------
@@ -712,14 +1000,16 @@ async def test_invalid_problem_ref_propagates_and_skips_executor() -> None:
 @pytest.mark.asyncio
 async def test_reasoning_request_failure_does_not_cause_second_ingestion() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     executor = SpyReasoningExecutor(_completed_outcome())
-    operation, _ = _operation(owner=owner, executor=executor)
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
 
     with pytest.raises(InvalidReasoningRequestError):
         await operation.execute(**_execute_kwargs(problem_ref=""))  # type: ignore[arg-type]
 
     _, situation = owner.current_snapshots()
     assert len(situation.entries_of_kind(SituationEntryKind.TASK)) == 1
+    assert authority.resolve(content_ref="task:123") == "Determine an answer."
 
 
 # --- exact ReasoningExecutionError propagation -------------------------------
@@ -741,14 +1031,16 @@ async def test_exact_execution_error_instance_propagates() -> None:
 @pytest.mark.asyncio
 async def test_reasoning_execution_error_does_not_cause_second_ingestion() -> None:
     owner = _owner()
+    authority = RuntimeContentReferenceAuthority()
     executor = SpyReasoningExecutor(ReasoningExecutionError("technical failure"))
-    operation, _ = _operation(owner=owner, executor=executor)
+    operation, _ = _operation(owner=owner, executor=executor, authority=authority)
 
     with pytest.raises(ReasoningExecutionError):
         await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
 
     _, situation = owner.current_snapshots()
     assert len(situation.entries_of_kind(SituationEntryKind.TASK)) == 1
+    assert authority.resolve(content_ref="task:123") == "Determine an answer."
 
 
 # --- ingestion failure prevents later stages ---------------------------------

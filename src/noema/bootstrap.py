@@ -18,6 +18,7 @@ from noema.cognition.application import (
     ContextRequestAssembler,
     DirectReasoningOperation,
     ReasoningEngine,
+    RuntimeContentReferenceAuthority,
 )
 from noema.cognition.domain.situation import SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
@@ -76,11 +77,13 @@ async def open_direct_runtime(
 
     Entering this context constructs the graph only -- it never calls
     ``execute``, ``reason``, ``route``, ``select``, or the provider client's
-    ``generate``, and it never contacts a real Ollama server. Two concurrently
-    or sequentially opened contexts are fully independent runtime instances,
-    each with its own ``CognitiveWorkspace``, ``SituationModel``,
-    ``CognitiveStateOwner``, and provider client, even when given the same
-    immutable ``workspace_budget``/``model_resource`` configuration objects.
+    ``generate``, and it never contacts a real Ollama server; in particular,
+    entering it registers no runtime content and ingests no canonical task.
+    Two concurrently or sequentially opened contexts are fully independent
+    runtime instances, each with its own ``CognitiveWorkspace``,
+    ``SituationModel``, ``CognitiveStateOwner``, ``RuntimeContentReferenceAuthority``,
+    and provider client, even when given the same immutable
+    ``workspace_budget``/``model_resource`` configuration objects.
     """
     if not isinstance(ollama_host, str):
         raise TypeError("ollama_host must be a string")
@@ -91,6 +94,7 @@ async def open_direct_runtime(
         workspace = CognitiveWorkspace(budget=workspace_budget)
         situation = SituationModel()
         state_owner = CognitiveStateOwner(workspace=workspace, situation=situation)
+        runtime_content_authority = RuntimeContentReferenceAuthority()
         canonical_input_ingestor = CanonicalInputIngestor(state_owner=state_owner)
         context_request_assembler = ContextRequestAssembler(state_owner=state_owner)
 
@@ -116,6 +120,7 @@ async def open_direct_runtime(
         reasoning_engine = ReasoningEngine(executor=reasoning_executor)
 
         operation = DirectReasoningOperation(
+            runtime_content_authority=runtime_content_authority,
             canonical_input_ingestor=canonical_input_ingestor,
             context_request_assembler=context_request_assembler,
             reasoning_engine=reasoning_engine,

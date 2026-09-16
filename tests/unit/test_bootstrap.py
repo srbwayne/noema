@@ -12,6 +12,8 @@ from noema.cognition.application import (
     CognitiveStateOwner,
     DirectReasoningOperation,
     ReasoningEngine,
+    RuntimeContentReferenceAuthority,
+    RuntimeContentReferenceNotFoundError,
 )
 from noema.cognition.domain.budget import CognitiveBudget
 from noema.cognition.domain.context import ContextVersionMarker
@@ -152,6 +154,7 @@ def test_no_process_global_runtime_objects_at_import_time() -> None:
         ReasoningEngine,
         CognitiveWorkspace,
         SituationModel,
+        RuntimeContentReferenceAuthority,
     )
     for name, value in vars(bootstrap).items():
         if name.startswith("__"):
@@ -358,6 +361,88 @@ async def test_first_execute_ingests_canonical_task_and_advances_situation_versi
         task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
         assert len(task_entries) == 1
         assert task_entries[0].content_ref == "task:distinctive"
+
+
+# --- M0-18 runtime content reference authority wiring -------------------------
+
+
+@pytest.mark.asyncio
+async def test_operation_receives_a_runtime_content_reference_authority_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        authority = operation._runtime_content_authority  # noqa: SLF001
+        assert isinstance(authority, RuntimeContentReferenceAuthority)
+
+
+@pytest.mark.asyncio
+async def test_context_entry_alone_registers_no_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        authority = operation._runtime_content_authority  # noqa: SLF001
+        with pytest.raises(RuntimeContentReferenceNotFoundError):
+            authority.resolve(content_ref="task:never-registered")
+
+
+@pytest.mark.asyncio
+async def test_first_execute_registers_the_exact_task_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        authority = operation._runtime_content_authority  # noqa: SLF001
+
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:distinctive", problem_statement="What is true?")
+        )  # type: ignore[arg-type]
+
+        assert authority.resolve(content_ref="task:distinctive") == "What is true?"
+
+
+@pytest.mark.asyncio
+async def test_same_runtime_sequential_executions_retain_both_content_registrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(
+        workspace_budget=_workspace_budget(),
+        ollama_host="host:1",
+        model_resource=_model_resource_capabilities(),
+    ) as operation:
+        authority = operation._runtime_content_authority  # noqa: SLF001
+
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:1", problem_statement="First question.")
+        )  # type: ignore[arg-type]
+        await operation.execute(
+            **_execute_kwargs(task_ref="task:2", problem_statement="Second question.")
+        )  # type: ignore[arg-type]
+
+        assert authority.resolve(content_ref="task:1") == "First question."
+        assert authority.resolve(content_ref="task:2") == "Second question."
 
 
 # --- C5 selection-request / provider / client identity (§54, §55, §56) -------
@@ -604,10 +689,46 @@ async def test_two_nested_runtimes_are_fully_independent(
             client_b = execution_engine_b._executor._client  # noqa: SLF001
             assert client_a is not client_b
 
+            authority_a = operation_a._runtime_content_authority  # noqa: SLF001
+            authority_b = operation_b._runtime_content_authority  # noqa: SLF001
+            assert authority_a is not authority_b
+
         assert fake_client_class.created[1].aexit_count == 1
         assert fake_client_class.created[0].aexit_count == 0
 
     assert fake_client_class.created[0].aexit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_two_runtimes_do_not_leak_content_registrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with (
+        open_direct_runtime(
+            workspace_budget=_workspace_budget(),
+            ollama_host="host:a",
+            model_resource=_model_resource_capabilities(),
+        ) as operation_a,
+        open_direct_runtime(
+            workspace_budget=_workspace_budget(),
+            ollama_host="host:b",
+            model_resource=_model_resource_capabilities(),
+        ) as operation_b,
+    ):
+        authority_a = operation_a._runtime_content_authority  # noqa: SLF001
+        authority_b = operation_b._runtime_content_authority  # noqa: SLF001
+
+        authority_a.register(content_ref="task:shared-ref", payload="only in A")
+
+        assert authority_a.resolve(content_ref="task:shared-ref") == "only in A"
+        with pytest.raises(RuntimeContentReferenceNotFoundError):
+            authority_b.resolve(content_ref="task:shared-ref")
+
+        authority_b.register(content_ref="task:shared-ref", payload="independently in B")
+        assert authority_b.resolve(content_ref="task:shared-ref") == "independently in B"
 
 
 # --- imports (no forbidden dependency leaks into this module) ----------------
@@ -707,10 +828,14 @@ async def test_same_runtime_context_retains_canonical_state_across_operations(
         workspace, situation = state_owner.current_snapshots()
 
         result_a = await operation.execute(
-            **_execute_kwargs(problem_ref="problem:a", problem_statement="First question.")
+            **_execute_kwargs(
+                task_ref="task:a", problem_ref="problem:a", problem_statement="First question."
+            )
         )  # type: ignore[arg-type]
         result_b = await operation.execute(
-            **_execute_kwargs(problem_ref="problem:b", problem_statement="Second question.")
+            **_execute_kwargs(
+                task_ref="task:b", problem_ref="problem:b", problem_statement="Second question."
+            )
         )  # type: ignore[arg-type]
 
         assert operation._context_request_assembler is assembler  # noqa: SLF001
