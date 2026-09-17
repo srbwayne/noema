@@ -63,7 +63,7 @@ class _FirstDirectInvocationPolicy:
     mode: CognitiveMode
     max_sensitivity: ContextSensitivity
     minimum_trust: ContextTrustLevel
-    context_max_tokens: int
+    context_max_content_size: int
     cognitive_budget: CognitiveBudget
 
 
@@ -84,7 +84,9 @@ _DIRECT_TABLES = frozenset({"policy", "budget"})
 _WORKSPACE_KEYS = frozenset({"max_active_items", "max_working_items", "max_peripheral_items"})
 _OLLAMA_KEYS = frozenset({"host"})
 _MODEL_KEYS = frozenset({"resource_ref", "provider_ref", "model_ref", "capabilities"})
-_POLICY_KEYS = frozenset({"role", "mode", "max_sensitivity", "minimum_trust", "context_max_tokens"})
+_POLICY_KEYS = frozenset(
+    {"role", "mode", "max_sensitivity", "minimum_trust", "context_max_content_size"}
+)
 _BUDGET_KEYS = frozenset(
     {
         "max_time_ms",
@@ -268,7 +270,9 @@ def _load_first_direct_process_configuration(path: Path) -> _FirstDirectProcessC
         _require_str(policy_table, "minimum_trust", "direct.policy"),
         "direct.policy.minimum_trust",
     )
-    context_max_tokens = _require_int(policy_table, "context_max_tokens", "direct.policy")
+    context_max_content_size = _require_int(
+        policy_table, "context_max_content_size", "direct.policy"
+    )
 
     _require_no_unknown_keys(budget_table, _BUDGET_KEYS, "direct.budget")
     max_time_ms = _require_int(budget_table, "max_time_ms", "direct.budget")
@@ -289,7 +293,7 @@ def _load_first_direct_process_configuration(path: Path) -> _FirstDirectProcessC
         mode=mode,
         max_sensitivity=max_sensitivity,
         minimum_trust=minimum_trust,
-        context_max_tokens=context_max_tokens,
+        context_max_content_size=context_max_content_size,
         cognitive_budget=cognitive_budget,
     )
 
@@ -341,7 +345,7 @@ async def _execute_first_direct_operation(
         minimum_trust=policy.minimum_trust,
         allowed_authorities=(),
         max_age=None,
-        max_tokens=policy.context_max_tokens,
+        max_total_content_size=policy.context_max_content_size,
         problem_ref=problem_ref,
         problem_statement=problem_statement,
         budget=policy.cognitive_budget,

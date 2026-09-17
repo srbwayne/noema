@@ -24,7 +24,7 @@ def context_slice() -> ContextSlice:
         trust=ContextTrustLevel.TRUSTED,
         instruction_authority=None,
         provenance_ref="situation-model:7",
-        token_estimate=120,
+        content_size=120,
     )
 
 
@@ -55,7 +55,11 @@ def test_context_candidate_accepts_normalized_float_relevance(value: float) -> N
     assert replace(candidate(), relevance=value).relevance == value
 
 
-@pytest.mark.parametrize("value", [-0.01, 1.01, nan, inf, -inf, True, False, 0, 1, None])
+def test_context_candidate_accepts_none_relevance_as_no_judgment_exists() -> None:
+    assert replace(candidate(), relevance=None).relevance is None
+
+
+@pytest.mark.parametrize("value", [-0.01, 1.01, nan, inf, -inf, True, False, 0, 1])
 def test_context_candidate_rejects_invalid_relevance(value: object) -> None:
     with pytest.raises(InvalidContextCandidateError, match="relevance"):
         replace(candidate(), relevance=value)

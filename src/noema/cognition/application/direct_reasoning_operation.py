@@ -89,7 +89,7 @@ class DirectReasoningOperation:
         minimum_trust: ContextTrustLevel,
         allowed_authorities: tuple[InstructionAuthority, ...],
         max_age: timedelta | None,
-        max_tokens: int,
+        max_total_content_size: int,
         problem_ref: str,
         problem_statement: str,
         budget: CognitiveBudget,
@@ -128,7 +128,7 @@ class DirectReasoningOperation:
             minimum_trust=minimum_trust,
             allowed_authorities=allowed_authorities,
             max_age=max_age,
-            max_tokens=max_tokens,
+            max_total_content_size=max_total_content_size,
         )
         reasoning_request = assemble_direct_reasoning_request(
             context_request=context_request,

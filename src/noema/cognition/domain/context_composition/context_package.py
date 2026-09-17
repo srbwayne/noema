@@ -42,10 +42,12 @@ class ContextPackage:
             raise InvalidContextPackageError(
                 "instruction authorities must be allowed by the request"
             )
-        if self.total_token_estimate > self.request.max_tokens:
-            raise InvalidContextPackageError("total token estimate exceeds request max_tokens")
+        if self.total_content_size > self.request.max_total_content_size:
+            raise InvalidContextPackageError(
+                "total content size exceeds request max_total_content_size"
+            )
 
     @property
-    def total_token_estimate(self) -> int:
-        """Return the token estimate derived from the contained slices."""
-        return sum(context_slice.token_estimate for context_slice in self.slices)
+    def total_content_size(self) -> int:
+        """Return the total exact content size derived from the contained slices."""
+        return sum(context_slice.content_size for context_slice in self.slices)

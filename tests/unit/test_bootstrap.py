@@ -77,7 +77,7 @@ def _execute_kwargs(**overrides: object) -> dict[str, object]:
         "minimum_trust": ContextTrustLevel.UNVERIFIED,
         "allowed_authorities": (),
         "max_age": None,
-        "max_tokens": 100,
+        "max_total_content_size": 100,
         "problem_ref": "problem:123",
         "problem_statement": "Determine an answer.",
         "budget": CognitiveBudget(

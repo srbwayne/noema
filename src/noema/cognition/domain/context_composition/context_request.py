@@ -27,7 +27,7 @@ class ContextRequest:
     minimum_trust: ContextTrustLevel
     allowed_authorities: tuple[InstructionAuthority, ...]
     max_age: timedelta | None
-    max_tokens: int
+    max_total_content_size: int
     context_stamp: ContextStamp
 
     def __post_init__(self) -> None:
@@ -63,11 +63,11 @@ class ContextRequest:
         ):
             raise InvalidContextRequestError("max_age must be None or a positive timedelta")
         if (
-            isinstance(self.max_tokens, bool)
-            or not isinstance(self.max_tokens, int)
-            or self.max_tokens <= 0
+            isinstance(self.max_total_content_size, bool)
+            or not isinstance(self.max_total_content_size, int)
+            or self.max_total_content_size <= 0
         ):
-            raise InvalidContextRequestError("max_tokens must be a positive int")
+            raise InvalidContextRequestError("max_total_content_size must be a positive int")
         if not isinstance(self.context_stamp, ContextStamp):
             raise InvalidContextRequestError("context_stamp must be a ContextStamp")
 

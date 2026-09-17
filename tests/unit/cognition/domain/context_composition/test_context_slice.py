@@ -22,7 +22,7 @@ def context_slice() -> ContextSlice:
         trust=ContextTrustLevel.TRUSTED,
         instruction_authority=InstructionAuthority.COGNITIVE_CONTROL,
         provenance_ref="situation-model:7",
-        token_estimate=120,
+        content_size=120,
     )
 
 
@@ -65,14 +65,14 @@ def test_context_slice_rejects_invalid_instruction_authority(value: object) -> N
 
 
 @pytest.mark.parametrize("value", [0, 1, 1000])
-def test_context_slice_accepts_non_negative_token_estimate(value: int) -> None:
-    assert replace(context_slice(), token_estimate=value).token_estimate == value
+def test_context_slice_accepts_non_negative_content_size(value: int) -> None:
+    assert replace(context_slice(), content_size=value).content_size == value
 
 
 @pytest.mark.parametrize("value", [-1, True, False, 1.0, None])
-def test_context_slice_rejects_invalid_token_estimate(value: object) -> None:
-    with pytest.raises(InvalidContextSliceError, match="token_estimate"):
-        replace(context_slice(), token_estimate=value)
+def test_context_slice_rejects_invalid_content_size(value: object) -> None:
+    with pytest.raises(InvalidContextSliceError, match="content_size"):
+        replace(context_slice(), content_size=value)
 
 
 def test_context_slice_is_immutable_and_structurally_equal() -> None:
