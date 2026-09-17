@@ -372,10 +372,13 @@ def test_planner_application_export() -> None:
         "DirectReasoningOperation",
         "InvalidCognitiveStateReplacementError",
         "Planner",
+        "PriorTaskContextMaterializationCoherenceError",
+        "PriorTaskContextMaterializer",
         "PriorTaskContextProjector",
         "ReasoningEngine",
         "RuntimeContentReferenceAuthority",
         "RuntimeContentReferenceConflictError",
         "RuntimeContentReferenceNotFoundError",
+        "UnsupportedPriorTaskContextSliceError",
         "assemble_direct_reasoning_request",
     ]

@@ -9,6 +9,11 @@ from .context_request_assembler import ContextRequestAssembler
 from .direct_reasoning_operation import DirectReasoningOperation
 from .direct_reasoning_request_assembler import assemble_direct_reasoning_request
 from .planner import Planner
+from .prior_task_context_materializer import (
+    PriorTaskContextMaterializationCoherenceError,
+    PriorTaskContextMaterializer,
+    UnsupportedPriorTaskContextSliceError,
+)
 from .prior_task_context_projector import PriorTaskContextProjector
 from .reasoning_engine import ReasoningEngine
 from .runtime_content_reference_authority import (
@@ -24,10 +29,13 @@ __all__ = [
     "DirectReasoningOperation",
     "InvalidCognitiveStateReplacementError",
     "Planner",
+    "PriorTaskContextMaterializationCoherenceError",
+    "PriorTaskContextMaterializer",
     "PriorTaskContextProjector",
     "ReasoningEngine",
     "RuntimeContentReferenceAuthority",
     "RuntimeContentReferenceConflictError",
     "RuntimeContentReferenceNotFoundError",
+    "UnsupportedPriorTaskContextSliceError",
     "assemble_direct_reasoning_request",
 ]
