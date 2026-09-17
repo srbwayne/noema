@@ -564,6 +564,32 @@ def test_required_ranking_uses_input_position_as_final_tie_breaker() -> None:
     )
 
 
+def test_required_ranking_size_precedes_unknown_vs_known_relevance_preference() -> None:
+    """content_size still precedes the relevance dimension even when one
+
+    candidate's relevance is unknown -- the structural relevance-key
+    discriminator must not accidentally outrank the size dimension that
+    already precedes it.
+    """
+    assert (
+        required_choice(
+            candidate(
+                "smaller-unknown",
+                slice_type=ContextSliceType.TASK,
+                content_size=1,
+                relevance=None,
+            ),
+            candidate(
+                "larger-known",
+                slice_type=ContextSliceType.TASK,
+                content_size=100,
+                relevance=1.0,
+            ),
+        )
+        == "smaller-unknown"
+    )
+
+
 def test_required_ranking_size_precedes_sensitivity_trust_and_relevance() -> None:
     """content_size, sensitivity, and trust all precede relevance in required
 

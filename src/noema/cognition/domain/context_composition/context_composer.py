@@ -200,16 +200,14 @@ class ContextComposer:
     def _required_sort_key(
         self,
         indexed_candidate: _IndexedCandidate,
-    ) -> tuple[int, int, int, int, float, int, timedelta, int]:
+    ) -> tuple[int, int, int, tuple[int, float | None], int, timedelta, int]:
         position, candidate = indexed_candidate
         context_slice = candidate.context_slice
-        relevance = candidate.relevance
         return (
             context_slice.content_size,
             self._sensitivity_rank(context_slice.sensitivity),
             -self._trust_rank(context_slice.trust),
-            self._unknown_relevance_rank(relevance),
-            -relevance if relevance is not None else 0.0,
+            self._required_relevance_sort_key(candidate.relevance),
             self._unknown_age_rank(candidate.age),
             candidate.age if candidate.age is not None else timedelta.max,
             position,
@@ -249,5 +247,16 @@ class ContextComposer:
         return 1 if age is None else 0
 
     @staticmethod
-    def _unknown_relevance_rank(relevance: float | None) -> int:
-        return 1 if relevance is None else 0
+    def _required_relevance_sort_key(relevance: float | None) -> tuple[int, float | None]:
+        """Rank known relevance ahead of unknown without a numeric sentinel.
+
+        Known relevance never compares against unknown relevance directly:
+        the leading discriminator (0 for known, 1 for unknown) always
+        differs between the two groups, so the second element -- an actual
+        score for known values, ``None`` for unknown -- is only ever
+        compared within a single group, where it is either two floats or
+        two ``None`` values, never one of each.
+        """
+        if relevance is None:
+            return (1, None)
+        return (0, -relevance)
