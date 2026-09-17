@@ -30,7 +30,7 @@ def request() -> ContextRequest:
         minimum_trust=ContextTrustLevel.UNVERIFIED,
         allowed_authorities=(InstructionAuthority.SYSTEM_POLICY,),
         max_age=timedelta(minutes=5),
-        max_tokens=100,
+        max_total_content_size=100,
         context_stamp=ContextStamp(
             workspace_version=1,
             situation_version=2,
@@ -46,7 +46,7 @@ def context_slice(
     *,
     content_ref: str = "situation:123",
     instruction_authority: InstructionAuthority | None = None,
-    token_estimate: int = 20,
+    content_size: int = 20,
     sensitivity: ContextSensitivity = ContextSensitivity.INTERNAL,
     trust: ContextTrustLevel = ContextTrustLevel.TRUSTED,
 ) -> ContextSlice:
@@ -58,7 +58,7 @@ def context_slice(
         trust=trust,
         instruction_authority=instruction_authority,
         provenance_ref=f"source:{content_ref}",
-        token_estimate=token_estimate,
+        content_size=content_size,
     )
 
 
@@ -69,7 +69,7 @@ def test_context_package_has_exact_fields() -> None:
 def test_context_package_accepts_empty_slices_without_required_types() -> None:
     package = ContextPackage(request=request(), slices=())
     assert package.slices == ()
-    assert package.total_token_estimate == 0
+    assert package.total_content_size == 0
 
 
 def test_context_package_rejects_empty_slices_with_required_type() -> None:
@@ -137,16 +137,16 @@ def test_context_package_accepts_data_without_authority_when_none_are_allowed() 
     assert ContextPackage(request=no_authority_request, slices=(context,)).slices == (context,)
 
 
-@pytest.mark.parametrize("token_estimate", [0, 99, 100])
-def test_context_package_accepts_token_total_within_limit(token_estimate: int) -> None:
-    context = context_slice(token_estimate=token_estimate)
+@pytest.mark.parametrize("content_size", [0, 99, 100])
+def test_context_package_accepts_content_size_total_within_limit(content_size: int) -> None:
+    context = context_slice(content_size=content_size)
     package = ContextPackage(request=request(), slices=(context,))
-    assert package.total_token_estimate == token_estimate
+    assert package.total_content_size == content_size
 
 
-def test_context_package_rejects_token_total_above_limit() -> None:
-    with pytest.raises(InvalidContextPackageError, match="token"):
-        ContextPackage(request=request(), slices=(context_slice(token_estimate=101),))
+def test_context_package_rejects_content_size_total_above_limit() -> None:
+    with pytest.raises(InvalidContextPackageError, match="content size"):
+        ContextPackage(request=request(), slices=(context_slice(content_size=101),))
 
 
 def test_context_package_rejects_list_slices() -> None:
@@ -185,12 +185,12 @@ def test_context_package_preserves_slice_order() -> None:
     assert package.slices == (second, first)
 
 
-def test_context_package_derives_total_token_estimate() -> None:
+def test_context_package_derives_total_content_size() -> None:
     slices = (
-        context_slice(ContextSliceType.TASK, content_ref="task:123", token_estimate=30),
-        context_slice(ContextSliceType.SITUATION, token_estimate=40),
+        context_slice(ContextSliceType.TASK, content_ref="task:123", content_size=30),
+        context_slice(ContextSliceType.SITUATION, content_size=40),
     )
-    assert ContextPackage(request=request(), slices=slices).total_token_estimate == 70
+    assert ContextPackage(request=request(), slices=slices).total_content_size == 70
 
 
 @pytest.mark.parametrize("value", [None, "request", {}, ()])

@@ -11,23 +11,28 @@ from .context_slice import ContextSlice
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ContextCandidate:
-    """Associate a projectable slice with explicit selection signals."""
+    """Associate a projectable slice with explicit selection signals.
+
+    ``relevance`` is ``None`` when no relevance judgment exists for this
+    candidate yet -- never a numeric sentinel such as ``0.0``, ``0.5``, or
+    ``1.0``. A known relevance score remains a finite float in ``[0.0, 1.0]``.
+    """
 
     context_slice: ContextSlice
-    relevance: float
+    relevance: float | None
     age: timedelta | None
 
     def __post_init__(self) -> None:
         """Validate candidate metadata without deriving or coercing values."""
         if not isinstance(self.context_slice, ContextSlice):
             raise InvalidContextCandidateError("context_slice must be a ContextSlice")
-        if (
+        if self.relevance is not None and (
             not isinstance(self.relevance, float)
             or not isfinite(self.relevance)
             or not 0.0 <= self.relevance <= 1.0
         ):
             raise InvalidContextCandidateError(
-                "relevance must be a finite float between 0.0 and 1.0"
+                "relevance must be None or a finite float between 0.0 and 1.0"
             )
         if self.age is not None and (
             not isinstance(self.age, timedelta) or self.age < timedelta(0)

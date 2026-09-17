@@ -37,7 +37,7 @@ def request(**changes: object) -> ContextRequest:
         minimum_trust=ContextTrustLevel.UNTRUSTED,
         allowed_authorities=ALL_AUTHORITIES,
         max_age=None,
-        max_tokens=1000,
+        max_total_content_size=1000,
         context_stamp=ContextStamp(
             workspace_version=1,
             situation_version=2,
@@ -53,7 +53,7 @@ def context_slice(
     content_ref: str,
     *,
     slice_type: ContextSliceType = ContextSliceType.EVIDENCE,
-    token_estimate: int = 10,
+    content_size: int = 10,
     sensitivity: ContextSensitivity = ContextSensitivity.PUBLIC,
     trust: ContextTrustLevel = ContextTrustLevel.TRUSTED,
     authority: InstructionAuthority | None = None,
@@ -66,7 +66,7 @@ def context_slice(
         trust=trust,
         instruction_authority=authority,
         provenance_ref=f"source:{content_ref}",
-        token_estimate=token_estimate,
+        content_size=content_size,
     )
 
 
@@ -74,9 +74,9 @@ def candidate(
     content_ref: str,
     *,
     slice_type: ContextSliceType = ContextSliceType.EVIDENCE,
-    relevance: float = 0.8,
+    relevance: float | None = 0.8,
     age: timedelta | None = timedelta(0),
-    token_estimate: int = 10,
+    content_size: int = 10,
     sensitivity: ContextSensitivity = ContextSensitivity.PUBLIC,
     trust: ContextTrustLevel = ContextTrustLevel.TRUSTED,
     authority: InstructionAuthority | None = None,
@@ -85,7 +85,7 @@ def candidate(
         context_slice=context_slice(
             content_ref,
             slice_type=slice_type,
-            token_estimate=token_estimate,
+            content_size=content_size,
             sensitivity=sensitivity,
             trust=trust,
             authority=authority,
@@ -347,6 +347,15 @@ def test_context_composer_hard_excludes_forbidden_type() -> None:
             ),
             {"allowed_authorities": ()},
         ),
+        (
+            candidate(
+                "unknown-relevance-sensitive",
+                slice_type=ContextSliceType.TASK,
+                relevance=None,
+                sensitivity=ContextSensitivity.SECRET,
+            ),
+            {"max_sensitivity": ContextSensitivity.PUBLIC},
+        ),
     ],
     ids=[
         "no-candidate",
@@ -356,6 +365,7 @@ def test_context_composer_hard_excludes_forbidden_type() -> None:
         "stale",
         "unknown-age",
         "authority",
+        "unknown-relevance-fails-other-guardrail",
     ],
 )
 def test_context_composer_never_bypasses_eligibility_for_required_types(
@@ -371,11 +381,108 @@ def test_context_composer_never_bypasses_eligibility_for_required_types(
         composer().compose(request=required_request, candidates=candidates)
 
 
-def test_required_ranking_prefers_lower_token_estimate_first() -> None:
+def test_unknown_relevance_required_candidate_satisfies_required_coverage() -> None:
+    """A single unknown-relevance candidate may satisfy an unsatisfied required type."""
+    required_request = request(required_slice_types=(ContextSliceType.TASK,))
+    candidates = (candidate("unknown-task", slice_type=ContextSliceType.TASK, relevance=None),)
+    assert compose_refs(candidates, current_request=required_request) == ("unknown-task",)
+
+
+def test_unknown_relevance_candidate_is_ineligible_for_optional_enrichment() -> None:
+    """Unknown relevance never reaches optional enrichment, regardless of budget room."""
+    candidates = (candidate("unknown", relevance=None),)
+    assert compose_refs(candidates) == ()
+
+
+def test_unknown_relevance_required_candidate_never_becomes_optional_when_not_required() -> None:
+    """Unknown relevance is not rescued by required_slice_types for a different type."""
+    required_request = request(required_slice_types=(ContextSliceType.SITUATION,))
+    candidates = (
+        candidate(
+            "unknown-task",
+            slice_type=ContextSliceType.TASK,
+            relevance=None,
+        ),
+        candidate(
+            "situation",
+            slice_type=ContextSliceType.SITUATION,
+            relevance=0.9,
+        ),
+    )
+    assert compose_refs(candidates, current_request=required_request) == ("situation",)
+
+
+def test_known_relevance_wins_required_slot_over_unknown_and_surplus_is_not_optional() -> None:
+    """Known relevance ranks ahead of unknown for the required slot; the losing
+
+    unknown-relevance candidate of the same required type is not admitted as
+    optional enrichment afterward -- required-type authority is coverage-bound.
+    """
+    required_request = request(required_slice_types=(ContextSliceType.TASK,))
+    candidates = (
+        candidate("known", slice_type=ContextSliceType.TASK, relevance=0.9),
+        candidate("unknown", slice_type=ContextSliceType.TASK, relevance=None),
+    )
+    assert compose_refs(candidates, current_request=required_request) == ("known",)
+
+
+def test_two_unknown_relevance_candidates_fall_through_to_age_and_surplus_is_excluded() -> None:
+    """Two unknown-relevance candidates tie at the relevance dimension and are
+
+    ranked by age; only the selected representative appears, the surplus
+    unknown candidate is never optional enrichment.
+    """
+    required_request = request(required_slice_types=(ContextSliceType.TASK,))
+    candidates = (
+        candidate(
+            "older",
+            slice_type=ContextSliceType.TASK,
+            relevance=None,
+            age=timedelta(minutes=10),
+        ),
+        candidate(
+            "newer",
+            slice_type=ContextSliceType.TASK,
+            relevance=None,
+            age=timedelta(minutes=1),
+        ),
+    )
+    assert compose_refs(candidates, current_request=required_request) == ("newer",)
+
+
+def test_two_known_candidates_one_required_remainder_may_become_optional() -> None:
+    """When two known-relevance candidates match one required type, the
+
+    non-selected remainder may still be admitted as ordinary optional
+    enrichment if capacity permits.
+    """
+    required_request = request(required_slice_types=(ContextSliceType.TASK,))
+    candidates = (
+        candidate("higher", slice_type=ContextSliceType.TASK, relevance=0.9),
+        candidate("lower", slice_type=ContextSliceType.TASK, relevance=0.6),
+    )
+    assert compose_refs(candidates, current_request=required_request) == ("higher", "lower")
+
+
+def test_unknown_relevance_satisfies_coverage_while_known_low_remains_excluded() -> None:
+    """An unknown-relevance required candidate may satisfy coverage while a
+
+    known below-threshold candidate of the same type remains permanently
+    excluded, unaffected by the other candidate's unknown status.
+    """
+    required_request = request(required_slice_types=(ContextSliceType.TASK,))
+    candidates = (
+        candidate("unknown", slice_type=ContextSliceType.TASK, relevance=None),
+        candidate("known-low", slice_type=ContextSliceType.TASK, relevance=0.4),
+    )
+    assert compose_refs(candidates, current_request=required_request) == ("unknown",)
+
+
+def test_required_ranking_prefers_lower_content_size_first() -> None:
     assert (
         required_choice(
-            candidate("large", slice_type=ContextSliceType.TASK, token_estimate=20, relevance=1.0),
-            candidate("small", slice_type=ContextSliceType.TASK, token_estimate=10, relevance=0.5),
+            candidate("large", slice_type=ContextSliceType.TASK, content_size=20, relevance=1.0),
+            candidate("small", slice_type=ContextSliceType.TASK, content_size=10, relevance=0.5),
         )
         == "small"
     )
@@ -404,6 +511,16 @@ def test_required_ranking_then_prefers_higher_trust() -> None:
             candidate("trusted", slice_type=ContextSliceType.TASK, trust=ContextTrustLevel.TRUSTED),
         )
         == "trusted"
+    )
+
+
+def test_required_ranking_then_prefers_known_relevance_over_unknown() -> None:
+    assert (
+        required_choice(
+            candidate("unknown", slice_type=ContextSliceType.TASK, relevance=None),
+            candidate("known", slice_type=ContextSliceType.TASK, relevance=0.5),
+        )
+        == "known"
     )
 
 
@@ -447,21 +564,49 @@ def test_required_ranking_uses_input_position_as_final_tie_breaker() -> None:
     )
 
 
-def test_required_coverage_minimizes_tokens_before_extra_relevance() -> None:
+def test_required_ranking_size_precedes_sensitivity_trust_and_relevance() -> None:
+    """content_size, sensitivity, and trust all precede relevance in required
+
+    ranking precedence -- a smaller-but-otherwise-worse candidate still wins.
+    """
+    assert (
+        required_choice(
+            candidate(
+                "small-but-worse",
+                slice_type=ContextSliceType.TASK,
+                content_size=1,
+                sensitivity=ContextSensitivity.SECRET,
+                trust=ContextTrustLevel.UNTRUSTED,
+                relevance=0.5,
+            ),
+            candidate(
+                "large-but-better",
+                slice_type=ContextSliceType.TASK,
+                content_size=100,
+                sensitivity=ContextSensitivity.PUBLIC,
+                trust=ContextTrustLevel.TRUSTED,
+                relevance=1.0,
+            ),
+        )
+        == "small-but-worse"
+    )
+
+
+def test_required_coverage_minimizes_content_size_before_extra_relevance() -> None:
     candidates = (
-        candidate("task-large", slice_type=ContextSliceType.TASK, relevance=1.0, token_estimate=90),
-        candidate("task-small", slice_type=ContextSliceType.TASK, relevance=0.5, token_estimate=10),
-        candidate("situation", slice_type=ContextSliceType.SITUATION, token_estimate=20),
+        candidate("task-large", slice_type=ContextSliceType.TASK, relevance=1.0, content_size=90),
+        candidate("task-small", slice_type=ContextSliceType.TASK, relevance=0.5, content_size=10),
+        candidate("situation", slice_type=ContextSliceType.SITUATION, content_size=20),
     )
     package = composer().compose(
         request=request(
             required_slice_types=(ContextSliceType.TASK, ContextSliceType.SITUATION),
-            max_tokens=30,
+            max_total_content_size=30,
         ),
         candidates=candidates,
     )
     assert tuple(item.content_ref for item in package.slices) == ("task-small", "situation")
-    assert package.total_token_estimate == 30
+    assert package.total_content_size == 30
 
 
 def test_required_coverage_rejects_max_slices_shortfall() -> None:
@@ -476,16 +621,16 @@ def test_required_coverage_rejects_max_slices_shortfall() -> None:
         composer(max_slices=1).compose(request=required_request, candidates=candidates)
 
 
-def test_required_coverage_rejects_minimum_token_cost_above_budget() -> None:
+def test_required_coverage_rejects_minimum_content_size_above_budget() -> None:
     required_request = request(
         required_slice_types=(ContextSliceType.TASK, ContextSliceType.SITUATION),
-        max_tokens=30,
+        max_total_content_size=30,
     )
     candidates = (
-        candidate("task", slice_type=ContextSliceType.TASK, token_estimate=20),
-        candidate("situation", slice_type=ContextSliceType.SITUATION, token_estimate=20),
+        candidate("task", slice_type=ContextSliceType.TASK, content_size=20),
+        candidate("situation", slice_type=ContextSliceType.SITUATION, content_size=20),
     )
-    with pytest.raises(ContextCompositionUnsatisfiedError, match="max_tokens"):
+    with pytest.raises(ContextCompositionUnsatisfiedError, match="max_total_content_size"):
         composer().compose(request=required_request, candidates=candidates)
 
 
@@ -530,10 +675,10 @@ def test_optional_ranking_then_prefers_lower_known_age() -> None:
     ) == ("newer", "older")
 
 
-def test_optional_ranking_then_prefers_lower_token_estimate() -> None:
+def test_optional_ranking_then_prefers_lower_content_size() -> None:
     assert optional_choice(
-        candidate("large", token_estimate=20),
-        candidate("small", token_estimate=10),
+        candidate("large", content_size=20),
+        candidate("small", content_size=10),
     ) == ("small", "large")
 
 
@@ -550,24 +695,24 @@ def test_required_selection_precedes_higher_relevance_optional() -> None:
     assert compose_refs(candidates, current_request=required_request) == ("task", "evidence")
 
 
-def test_optional_token_overflow_is_skipped_not_a_break() -> None:
+def test_optional_content_size_overflow_is_skipped_not_a_break() -> None:
     current_request = request(
         required_slice_types=(ContextSliceType.TASK,),
-        max_tokens=50,
+        max_total_content_size=50,
     )
     candidates = (
-        candidate("task", slice_type=ContextSliceType.TASK, token_estimate=20),
-        candidate("large", relevance=1.0, token_estimate=40),
-        candidate("fitting", relevance=0.9, token_estimate=30),
+        candidate("task", slice_type=ContextSliceType.TASK, content_size=20),
+        candidate("large", relevance=1.0, content_size=40),
+        candidate("fitting", relevance=0.9, content_size=30),
     )
     assert compose_refs(candidates, current_request=current_request) == ("task", "fitting")
 
 
-def test_max_slices_bounds_zero_token_candidates() -> None:
-    candidates = tuple(candidate(f"zero:{index}", token_estimate=0) for index in range(5))
+def test_max_slices_bounds_zero_size_candidates() -> None:
+    candidates = tuple(candidate(f"zero:{index}", content_size=0) for index in range(5))
     package = composer(max_slices=2).compose(request=request(), candidates=candidates)
     assert len(package.slices) == 2
-    assert package.total_token_estimate == 0
+    assert package.total_content_size == 0
 
 
 def test_empty_candidates_produce_empty_package_without_required_types() -> None:
@@ -597,17 +742,17 @@ def test_composed_package_preserves_all_final_invariants() -> None:
         required_slice_types=(ContextSliceType.TASK,),
         forbidden_slice_types=(ContextSliceType.MEMORY,),
         allowed_authorities=(InstructionAuthority.SYSTEM_POLICY,),
-        max_tokens=35,
+        max_total_content_size=35,
     )
     candidates = (
-        candidate("task", slice_type=ContextSliceType.TASK, token_estimate=10),
+        candidate("task", slice_type=ContextSliceType.TASK, content_size=10),
         candidate(
             "policy",
             slice_type=ContextSliceType.POLICY,
             authority=InstructionAuthority.SYSTEM_POLICY,
-            token_estimate=10,
+            content_size=10,
         ),
-        candidate("evidence", token_estimate=15),
+        candidate("evidence", content_size=15),
         candidate("memory", slice_type=ContextSliceType.MEMORY, relevance=1.0),
     )
     package = ContextComposer(policy=current_policy).compose(
@@ -615,7 +760,7 @@ def test_composed_package_preserves_all_final_invariants() -> None:
         candidates=candidates,
     )
     assert len(package.slices) <= current_policy.max_slices
-    assert package.total_token_estimate <= current_request.max_tokens
+    assert package.total_content_size <= current_request.max_total_content_size
     assert all(
         item.slice_type not in current_request.forbidden_slice_types for item in package.slices
     )

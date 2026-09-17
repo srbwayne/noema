@@ -30,7 +30,7 @@ def request() -> ContextRequest:
             InstructionAuthority.USER_EXPLICIT,
         ),
         max_age=timedelta(minutes=5),
-        max_tokens=2048,
+        max_total_content_size=2048,
         context_stamp=ContextStamp(
             workspace_version=1,
             situation_version=2,
@@ -138,14 +138,14 @@ def test_context_request_rejects_invalid_max_age(value: object) -> None:
 
 
 @pytest.mark.parametrize("value", [1, 5000])
-def test_context_request_accepts_positive_max_tokens(value: int) -> None:
-    assert replace(request(), max_tokens=value).max_tokens == value
+def test_context_request_accepts_positive_max_total_content_size(value: int) -> None:
+    assert replace(request(), max_total_content_size=value).max_total_content_size == value
 
 
 @pytest.mark.parametrize("value", [0, -1, True, False, 1.0, None])
-def test_context_request_rejects_invalid_max_tokens(value: object) -> None:
-    with pytest.raises(InvalidContextRequestError, match="max_tokens"):
-        replace(request(), max_tokens=value)
+def test_context_request_rejects_invalid_max_total_content_size(value: object) -> None:
+    with pytest.raises(InvalidContextRequestError, match="max_total_content_size"):
+        replace(request(), max_total_content_size=value)
 
 
 @pytest.mark.parametrize("value", [(), {}, None])

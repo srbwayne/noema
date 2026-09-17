@@ -58,7 +58,7 @@ class ContextRequestAssembler:
         minimum_trust: ContextTrustLevel,
         allowed_authorities: tuple[InstructionAuthority, ...],
         max_age: timedelta | None,
-        max_tokens: int,
+        max_total_content_size: int,
     ) -> ContextRequest:
         """Observe the canonical pair once and return a ``ContextRequest``.
 
@@ -88,6 +88,6 @@ class ContextRequestAssembler:
             minimum_trust=minimum_trust,
             allowed_authorities=allowed_authorities,
             max_age=max_age,
-            max_tokens=max_tokens,
+            max_total_content_size=max_total_content_size,
             context_stamp=context_stamp,
         )

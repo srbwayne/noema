@@ -90,7 +90,7 @@ role = "<string>"
 mode = "<mode>"                    # one of: reflex | fast | deliberate | deep
 max_sensitivity = "<sensitivity>"  # one of: public | internal | private | secret
 minimum_trust = "<trust level>"    # one of: trusted | unverified | untrusted
-context_max_tokens = <integer>
+context_max_content_size = <integer>
 
 [direct.budget]
 max_time_ms = <integer>       # milliseconds

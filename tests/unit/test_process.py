@@ -61,7 +61,7 @@ def _valid_tables() -> dict[str, dict[str, dict[str, object]]]:
                 "mode": "deliberate",
                 "max_sensitivity": "internal",
                 "minimum_trust": "unverified",
-                "context_max_tokens": 100,
+                "context_max_content_size": 100,
             },
             "budget": {
                 "max_time_ms": 1000,
@@ -154,7 +154,7 @@ _ALL_LEAVES = [
     ("direct", "policy", "mode"),
     ("direct", "policy", "max_sensitivity"),
     ("direct", "policy", "minimum_trust"),
-    ("direct", "policy", "context_max_tokens"),
+    ("direct", "policy", "context_max_content_size"),
     ("direct", "budget", "max_time_ms"),
     ("direct", "budget", "max_steps"),
     ("direct", "budget", "max_llm_calls"),
@@ -168,7 +168,7 @@ _INT_LEAVES = [
     ("runtime", "workspace", "max_active_items"),
     ("runtime", "workspace", "max_working_items"),
     ("runtime", "workspace", "max_peripheral_items"),
-    ("direct", "policy", "context_max_tokens"),
+    ("direct", "policy", "context_max_content_size"),
     ("direct", "budget", "max_time_ms"),
     ("direct", "budget", "max_steps"),
     ("direct", "budget", "max_llm_calls"),
@@ -216,7 +216,7 @@ def test_loader_success_constructs_exact_configuration(tmp_path: Path) -> None:
     assert policy.mode is CognitiveMode.DELIBERATE
     assert policy.max_sensitivity is ContextSensitivity.INTERNAL
     assert policy.minimum_trust is ContextTrustLevel.UNVERIFIED
-    assert policy.context_max_tokens == 100
+    assert policy.context_max_content_size == 100
     assert policy.cognitive_budget == CognitiveBudget(
         max_time=timedelta(milliseconds=1000),
         max_steps=1,
@@ -625,7 +625,7 @@ def _configuration() -> _FirstDirectProcessConfiguration:
             mode=CognitiveMode.DELIBERATE,
             max_sensitivity=ContextSensitivity.INTERNAL,
             minimum_trust=ContextTrustLevel.UNVERIFIED,
-            context_max_tokens=100,
+            context_max_content_size=100,
             cognitive_budget=CognitiveBudget(
                 max_time=timedelta(seconds=1),
                 max_steps=1,
@@ -777,7 +777,7 @@ async def test_execute_first_direct_operation_passes_exact_p2_mapping(
     assert kwargs["minimum_trust"] is policy.minimum_trust
     assert kwargs["allowed_authorities"] == ()
     assert kwargs["max_age"] is None
-    assert kwargs["max_tokens"] == policy.context_max_tokens
+    assert kwargs["max_total_content_size"] == policy.context_max_content_size
     assert kwargs["problem_statement"] == "Explain this."
     assert kwargs["budget"] is policy.cognitive_budget
     assert result is operation.results[0]
@@ -900,7 +900,7 @@ async def test_execute_first_direct_session_uses_same_policy_for_every_call(
         assert kwargs["mode"] is policy.mode
         assert kwargs["max_sensitivity"] is policy.max_sensitivity
         assert kwargs["minimum_trust"] is policy.minimum_trust
-        assert kwargs["max_tokens"] == policy.context_max_tokens
+        assert kwargs["max_total_content_size"] == policy.context_max_content_size
         assert kwargs["budget"] is policy.cognitive_budget
 
 

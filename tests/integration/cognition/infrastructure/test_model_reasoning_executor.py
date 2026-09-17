@@ -59,7 +59,7 @@ def empty_context_package() -> ContextPackage:
         minimum_trust=ContextTrustLevel.UNVERIFIED,
         allowed_authorities=(),
         max_age=None,
-        max_tokens=100,
+        max_total_content_size=100,
         context_stamp=ContextStamp(
             workspace_version=1,
             situation_version=1,
@@ -83,7 +83,7 @@ def context_package_with_one_slice() -> ContextPackage:
         minimum_trust=ContextTrustLevel.UNVERIFIED,
         allowed_authorities=(),
         max_age=None,
-        max_tokens=100,
+        max_total_content_size=100,
         context_stamp=ContextStamp(
             workspace_version=1,
             situation_version=1,
@@ -100,7 +100,7 @@ def context_package_with_one_slice() -> ContextPackage:
         trust=ContextTrustLevel.UNVERIFIED,
         instruction_authority=None,
         provenance_ref="provenance:1",
-        token_estimate=10,
+        content_size=10,
     )
     return ContextPackage(request=context_request, slices=(task_slice,))
 

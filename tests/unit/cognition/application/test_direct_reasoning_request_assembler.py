@@ -46,7 +46,7 @@ def _context_request(
         minimum_trust=ContextTrustLevel.UNVERIFIED,
         allowed_authorities=(),
         max_age=None,
-        max_tokens=100,
+        max_total_content_size=100,
         context_stamp=_context_stamp(),
     )
 
@@ -152,7 +152,7 @@ def test_context_package_has_empty_slices() -> None:
     )
 
     assert result.context.slices == ()
-    assert result.context.total_token_estimate == 0
+    assert result.context.total_content_size == 0
 
 
 def test_does_not_normalize_problem_inputs() -> None:

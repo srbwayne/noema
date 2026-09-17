@@ -60,7 +60,7 @@ def _assemble_kwargs() -> dict[str, object]:
         "minimum_trust": ContextTrustLevel.UNVERIFIED,
         "allowed_authorities": (),
         "max_age": None,
-        "max_tokens": 100,
+        "max_total_content_size": 100,
     }
 
 
@@ -144,7 +144,7 @@ def test_assemble_has_exact_keyword_only_signature() -> None:
         "minimum_trust",
         "allowed_authorities",
         "max_age",
-        "max_tokens",
+        "max_total_content_size",
     ]
     assert "context_stamp" not in signature.parameters
     for name, parameter in signature.parameters.items():
@@ -232,7 +232,7 @@ def test_assemble_forwards_every_caller_field_unchanged() -> None:
         minimum_trust=ContextTrustLevel.TRUSTED,
         allowed_authorities=allowed_authorities,
         max_age=max_age,
-        max_tokens=512,
+        max_total_content_size=512,
     )
 
     assert request.role == "planner"
@@ -245,7 +245,7 @@ def test_assemble_forwards_every_caller_field_unchanged() -> None:
     assert request.minimum_trust is ContextTrustLevel.TRUSTED
     assert request.allowed_authorities is allowed_authorities
     assert request.max_age is max_age
-    assert request.max_tokens == 512
+    assert request.max_total_content_size == 512
 
 
 def test_assemble_does_not_normalize_caller_string_whitespace() -> None:

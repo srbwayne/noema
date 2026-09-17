@@ -41,7 +41,7 @@ def reasoning_request(
         minimum_trust=ContextTrustLevel.UNVERIFIED,
         allowed_authorities=(),
         max_age=None,
-        max_tokens=100,
+        max_total_content_size=100,
         context_stamp=ContextStamp(
             workspace_version=1,
             situation_version=1,

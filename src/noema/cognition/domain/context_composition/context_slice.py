@@ -22,7 +22,7 @@ class ContextSlice:
     trust: ContextTrustLevel
     instruction_authority: InstructionAuthority | None
     provenance_ref: str
-    token_estimate: int
+    content_size: int
 
     def __post_init__(self) -> None:
         """Validate slice types and invariants without coercion."""
@@ -45,11 +45,11 @@ class ContextSlice:
             )
         self._validate_non_empty_string("provenance_ref", self.provenance_ref)
         if (
-            isinstance(self.token_estimate, bool)
-            or not isinstance(self.token_estimate, int)
-            or self.token_estimate < 0
+            isinstance(self.content_size, bool)
+            or not isinstance(self.content_size, int)
+            or self.content_size < 0
         ):
-            raise InvalidContextSliceError("token_estimate must be a non-negative int")
+            raise InvalidContextSliceError("content_size must be a non-negative int")
 
     @staticmethod
     def _validate_non_empty_string(name: str, value: object) -> None:

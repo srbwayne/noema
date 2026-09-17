@@ -204,7 +204,7 @@ def _execute_kwargs(**overrides: object) -> dict[str, object]:
         "minimum_trust": ContextTrustLevel.UNVERIFIED,
         "allowed_authorities": (),
         "max_age": None,
-        "max_tokens": 100,
+        "max_total_content_size": 100,
         "problem_ref": "problem:123",
         "problem_statement": "Determine an answer.",
         "budget": _budget(),
@@ -402,7 +402,7 @@ def test_execute_has_exact_keyword_only_signature() -> None:
         "minimum_trust",
         "allowed_authorities",
         "max_age",
-        "max_tokens",
+        "max_total_content_size",
         "problem_ref",
         "problem_statement",
         "budget",
@@ -426,7 +426,7 @@ def test_execute_type_hints_are_exact() -> None:
     assert hints["minimum_trust"] is ContextTrustLevel
     assert hints["allowed_authorities"] == tuple[InstructionAuthority, ...]
     assert hints["max_age"] == (timedelta | None)
-    assert hints["max_tokens"] is int
+    assert hints["max_total_content_size"] is int
     assert hints["problem_ref"] is str
     assert hints["problem_statement"] is str
     assert hints["budget"] is CognitiveBudget
@@ -857,7 +857,7 @@ async def test_context_fields_are_forwarded_unchanged() -> None:
             minimum_trust=ContextTrustLevel.TRUSTED,
             allowed_authorities=allowed_authorities,
             max_age=max_age,
-            max_tokens=512,
+            max_total_content_size=512,
         )
     )  # type: ignore[arg-type]
 
@@ -872,7 +872,7 @@ async def test_context_fields_are_forwarded_unchanged() -> None:
     assert request.minimum_trust is ContextTrustLevel.TRUSTED
     assert request.allowed_authorities is allowed_authorities
     assert request.max_age is max_age
-    assert request.max_tokens == 512
+    assert request.max_total_content_size == 512
 
 
 # --- problem forwarding -----------------------------------------------------
