@@ -17,6 +17,14 @@ class ReasoningExecutor(Protocol):
     implementation must translate technical failures of the underlying
     execution technology into ``ReasoningExecutionError`` — provider- or
     technology-specific exceptions must not cross this port.
+
+    Cooperative-cancellation contract: an implementation must allow
+    ``asyncio`` task cancellation to propagate through its ``execute`` call.
+    It must not intentionally suppress ``asyncio.CancelledError`` -- it may
+    perform cleanup using ``try``/``finally``, but must re-raise cancellation
+    after that cleanup. A caller (for example a budget-enforcing decorator
+    wrapping this port) may rely on this to cancel an in-flight execution
+    when a deadline elapses.
     """
 
     async def execute(

@@ -5,8 +5,12 @@ from decimal import Decimal
 import pytest
 
 from noema.cognition.domain.budget import CognitiveBudget
+from noema.cognition.domain.budget import (
+    CognitiveBudgetTimeExceededError as CognitiveBudgetTimeExceededErrorViaBudget,
+)
 from noema.cognition.domain.errors import (
     CognitiveBudgetExhaustedError,
+    CognitiveBudgetTimeExceededError,
     InvalidCognitiveBudgetError,
 )
 from noema.cognition.ports import ReasoningExecutionError
@@ -197,3 +201,36 @@ def test_cognitive_budget_exhausted_error_is_not_a_technical_execution_error() -
 def test_cognitive_budget_exhausted_error_can_be_raised_and_caught() -> None:
     with pytest.raises(CognitiveBudgetExhaustedError, match="denied"):
         raise CognitiveBudgetExhaustedError("admission denied")
+
+
+# --- CognitiveBudgetTimeExceededError (ADR-0033) ------------------------------
+
+
+def test_cognitive_budget_time_exceeded_error_is_a_domain_error() -> None:
+    assert issubclass(CognitiveBudgetTimeExceededError, DomainError)
+
+
+def test_cognitive_budget_time_exceeded_error_is_distinct_from_invalid_budget_error() -> None:
+    assert CognitiveBudgetTimeExceededError is not InvalidCognitiveBudgetError
+    assert not issubclass(CognitiveBudgetTimeExceededError, InvalidCognitiveBudgetError)
+    assert not issubclass(InvalidCognitiveBudgetError, CognitiveBudgetTimeExceededError)
+
+
+def test_cognitive_budget_time_exceeded_error_is_distinct_from_exhausted_error() -> None:
+    assert CognitiveBudgetTimeExceededError is not CognitiveBudgetExhaustedError
+    assert not issubclass(CognitiveBudgetTimeExceededError, CognitiveBudgetExhaustedError)
+    assert not issubclass(CognitiveBudgetExhaustedError, CognitiveBudgetTimeExceededError)
+
+
+def test_cognitive_budget_time_exceeded_error_is_not_a_technical_execution_error() -> None:
+    assert not issubclass(CognitiveBudgetTimeExceededError, ReasoningExecutionError)
+    assert not issubclass(ReasoningExecutionError, CognitiveBudgetTimeExceededError)
+
+
+def test_cognitive_budget_time_exceeded_error_can_be_raised_and_caught() -> None:
+    with pytest.raises(CognitiveBudgetTimeExceededError, match="exceeded"):
+        raise CognitiveBudgetTimeExceededError("ReasoningStrategy.DIRECT exceeded max_time")
+
+
+def test_cognitive_budget_time_exceeded_error_reexport_is_the_same_class() -> None:
+    assert CognitiveBudgetTimeExceededErrorViaBudget is CognitiveBudgetTimeExceededError

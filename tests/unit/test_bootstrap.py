@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from datetime import timedelta
 from decimal import Decimal
@@ -10,6 +11,7 @@ from noema.bootstrap import open_direct_runtime
 from noema.cognition.application import (
     CanonicalInputIngestor,
     CognitiveBudgetAdmittingReasoningExecutor,
+    CognitiveBudgetTimeBoundReasoningExecutor,
     CognitiveStateOwner,
     ContextPackagePreparer,
     DirectReasoningOperation,
@@ -28,7 +30,10 @@ from noema.cognition.domain.context_composition import (
     ContextSensitivity,
     ContextTrustLevel,
 )
-from noema.cognition.domain.errors import CognitiveBudgetExhaustedError
+from noema.cognition.domain.errors import (
+    CognitiveBudgetExhaustedError,
+    CognitiveBudgetTimeExceededError,
+)
 from noema.cognition.domain.modes import CognitiveMode
 from noema.cognition.domain.reasoning import (
     ReasoningOutcome,
@@ -127,6 +132,14 @@ class _FakeGenerateResponse:
         self.response = text
 
 
+class _BlockForever:
+    """Sentinel ``generate_result``: the fake provider blocks cooperatively
+    on an ``asyncio.Event`` that never fires, until externally cancelled."""
+
+
+BLOCK_FOREVER = _BlockForever()
+
+
 def _make_fake_async_client_class(
     generate_result: object = "the answer",
 ) -> type:
@@ -134,6 +147,9 @@ def _make_fake_async_client_class(
 
     A new class is returned per call so each test gets its own isolated
     ``created`` instance registry, with no real SDK/network involvement.
+    When ``generate_result`` is ``BLOCK_FOREVER``, ``generate`` blocks on a
+    cooperative await until cancelled and records that cancellation was
+    actually observed.
     """
 
     class FakeAsyncClient:
@@ -144,6 +160,7 @@ def _make_fake_async_client_class(
             self.aenter_count = 0
             self.aexit_count = 0
             self.generate_calls: list[dict[str, object]] = []
+            self.cancellation_observed = False
             type(self).created.append(self)
 
         async def __aenter__(self) -> "FakeAsyncClient":
@@ -155,6 +172,12 @@ def _make_fake_async_client_class(
 
         async def generate(self, *, model: str, prompt: str, stream: bool) -> _FakeGenerateResponse:
             self.generate_calls.append({"model": model, "prompt": prompt, "stream": stream})
+            if generate_result is BLOCK_FOREVER:
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancellation_observed = True
+                    raise
             if isinstance(generate_result, BaseException):
                 raise generate_result
             return _FakeGenerateResponse(str(generate_result))
@@ -536,7 +559,7 @@ async def test_runtime_content_authority_is_shared_by_registration_projector_and
         assert isinstance(projector, PriorTaskContextProjector)
         projector_authority = projector._runtime_content_authority  # noqa: SLF001
 
-        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor._inner_executor  # noqa: SLF001
         input_materializer = reasoning_executor._input_materializer  # noqa: SLF001
         assert isinstance(input_materializer, PriorTaskReasoningInputMaterializer)
         context_materializer = input_materializer._context_materializer  # noqa: SLF001
@@ -555,7 +578,7 @@ async def test_reasoning_input_materializer_is_injected_when_disabled_too(
     monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
 
     async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor._inner_executor  # noqa: SLF001
         assert isinstance(
             reasoning_executor._input_materializer,  # noqa: SLF001
             PriorTaskReasoningInputMaterializer,
@@ -576,13 +599,16 @@ async def test_reasoning_engine_executor_is_the_budget_admitting_decorator(
         outer_executor = operation._reasoning_engine._executor  # noqa: SLF001
         assert isinstance(outer_executor, CognitiveBudgetAdmittingReasoningExecutor)
 
-        inner_executor = outer_executor._inner_executor  # noqa: SLF001
+        time_bound_executor = outer_executor._inner_executor  # noqa: SLF001
+        assert isinstance(time_bound_executor, CognitiveBudgetTimeBoundReasoningExecutor)
+
+        inner_executor = time_bound_executor._inner_executor  # noqa: SLF001
         assert isinstance(inner_executor, ModelReasoningExecutor)
 
         # No duplicate ModelReasoningExecutor / ReasoningEngine: exactly one
         # of each, wired in the frozen order
-        # ModelReasoningExecutor -> CognitiveBudgetAdmittingReasoningExecutor
-        # -> ReasoningEngine.
+        # ModelReasoningExecutor -> CognitiveBudgetTimeBoundReasoningExecutor
+        # -> CognitiveBudgetAdmittingReasoningExecutor -> ReasoningEngine.
         assert isinstance(inner_executor._input_materializer, PriorTaskReasoningInputMaterializer)  # noqa: SLF001
         assert inner_executor._execution_engine is not None  # noqa: SLF001
         assert inner_executor._selection_request is not None  # noqa: SLF001
@@ -711,6 +737,173 @@ async def test_same_runtime_two_operations_share_one_budget_object_and_each_admi
     assert shared_budget.max_llm_calls == 1
 
 
+# --- cognitive budget time deadline object graph (ADR-0033) -------------------
+
+
+@pytest.mark.asyncio
+async def test_max_llm_calls_zero_with_tiny_max_time_still_denies_by_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves MAX_LLM_ADMISSION_PRECEDES_TIME_DEADLINE through the real graph.
+
+    Pairs ``max_llm_calls=0`` with an extremely small ``max_time``. Because
+    admission runs strictly outside (upstream of) the time-bound decorator's
+    ``asyncio.timeout`` scope, the result must be ``CognitiveBudgetExhaustedError``,
+    never ``CognitiveBudgetTimeExceededError`` -- the timeout scope must never
+    even be entered, so no provider call and no materialization occur.
+    """
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    tiny_time_zero_calls_budget = CognitiveBudget(
+        max_time=timedelta(microseconds=1),
+        max_steps=1,
+        max_llm_calls=0,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        with pytest.raises(CognitiveBudgetExhaustedError):
+            await operation.execute(
+                **_execute_kwargs(
+                    task_ref="task:admission-precedes-deadline",
+                    budget=tiny_time_zero_calls_budget,
+                )
+            )  # type: ignore[arg-type]
+
+        assert fake_client_class.created[0].generate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_deadline_expiry_cancels_the_provider_call_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the real-graph cognitive deadline: sufficient max_llm_calls
+    admits the request, but a short max_time expires while the fake
+    provider is cooperatively blocked, so the decorator cancels it.
+
+    Expected: ``CognitiveBudgetTimeExceededError``, exactly one provider
+    attempt, that attempt observing ``CancelledError``, and no retry.
+    """
+    fake_client_class = _make_fake_async_client_class(generate_result=BLOCK_FOREVER)
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    short_deadline_budget = CognitiveBudget(
+        max_time=timedelta(milliseconds=50),
+        max_steps=1,
+        max_llm_calls=1,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        with pytest.raises(CognitiveBudgetTimeExceededError):
+            await operation.execute(
+                **_execute_kwargs(
+                    task_ref="task:deadline-expired",
+                    budget=short_deadline_budget,
+                )
+            )  # type: ignore[arg-type]
+
+        client = fake_client_class.created[0]
+        assert len(client.generate_calls) == 1
+        assert client.cancellation_observed is True
+
+        # No rollback (ADR-0033 upstream no-rollback semantics): registered
+        # current TASK content and canonical TASK entry remain resolvable
+        # after a deadline-expiry failure.
+        authority = operation._runtime_content_authority  # noqa: SLF001
+        assert authority.resolve(content_ref="task:deadline-expired") is not None
+        state_owner = operation._context_package_preparer._state_owner  # noqa: SLF001
+        _, situation = state_owner.current_snapshots()
+        task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+        assert any(entry.content_ref == "task:deadline-expired" for entry in task_entries)
+
+
+@pytest.mark.asyncio
+async def test_provider_technical_timeout_remains_reasoning_execution_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves provider-technical timeout stays distinct from cognitive
+    deadline expiry: the fake provider raises a plain built-in
+    ``TimeoutError`` immediately, while ``max_time`` is comfortably large.
+
+    Expected: ``ReasoningExecutionError`` (the existing Ollama/model_router
+    technical-failure translation path), never
+    ``CognitiveBudgetTimeExceededError``.
+    """
+    fake_client_class = _make_fake_async_client_class(
+        generate_result=TimeoutError("technical provider timeout")
+    )
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    adequate_time_budget = CognitiveBudget(
+        max_time=timedelta(seconds=30),
+        max_steps=1,
+        max_llm_calls=1,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        with pytest.raises(ReasoningExecutionError) as raised:
+            await operation.execute(
+                **_execute_kwargs(
+                    task_ref="task:provider-technical-timeout",
+                    budget=adequate_time_budget,
+                )
+            )  # type: ignore[arg-type]
+
+        assert not isinstance(raised.value, CognitiveBudgetTimeExceededError)
+        assert len(fake_client_class.created[0].generate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_budget_object_grants_a_fresh_deadline_to_each_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves MAX_TIME_PER_REQUEST_RESET through the real graph: the exact
+    same immutable ``CognitiveBudget`` object, reused across two sequential
+    successful operations, admits and completes both -- no elapsed time
+    carries over from the first request's deadline into the second's."""
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    shared_budget = CognitiveBudget(
+        max_time=timedelta(seconds=1),
+        max_steps=1,
+        max_llm_calls=1,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        first_result = await operation.execute(
+            **_execute_kwargs(
+                task_ref="task:first", problem_ref="problem:first", budget=shared_budget
+            )
+        )  # type: ignore[arg-type]
+        second_result = await operation.execute(
+            **_execute_kwargs(
+                task_ref="task:second", problem_ref="problem:second", budget=shared_budget
+            )
+        )  # type: ignore[arg-type]
+
+    assert isinstance(first_result, ReasoningOutcome)
+    assert isinstance(second_result, ReasoningOutcome)
+    assert len(fake_client_class.created[0].generate_calls) == 2
+    assert shared_budget.max_time == timedelta(seconds=1)
+
+
 # --- selection-request / provider / client identity ---------------------------
 
 
@@ -725,7 +918,7 @@ async def test_selection_request_uses_exact_supplied_model_resource(
     async with open_direct_runtime(
         **_open_runtime_kwargs(model_resource=model_resource)
     ) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor._inner_executor  # noqa: SLF001
         selection_request = reasoning_executor._selection_request  # noqa: SLF001
 
         assert selection_request.requirements.required_capabilities == frozenset(
@@ -746,7 +939,7 @@ async def test_provider_ref_is_derived_from_model_resource(
     async with open_direct_runtime(
         **_open_runtime_kwargs(model_resource=model_resource)
     ) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor._inner_executor  # noqa: SLF001
         execution_engine = reasoning_executor._execution_engine  # noqa: SLF001
         ollama_executor = execution_engine._executor  # noqa: SLF001
 
@@ -761,7 +954,7 @@ async def test_ollama_executor_retains_the_exact_entered_client(
     monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
 
     async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor._inner_executor  # noqa: SLF001
         execution_engine = reasoning_executor._execution_engine  # noqa: SLF001
         ollama_executor = execution_engine._executor  # noqa: SLF001
 
@@ -924,8 +1117,10 @@ async def test_two_nested_runtimes_are_fully_independent(
             assert workspace_a.budget is shared_workspace_budget
             assert workspace_b.budget is shared_workspace_budget
 
-            reasoning_executor_a = operation_a._reasoning_engine._executor._inner_executor  # noqa: SLF001
-            reasoning_executor_b = operation_b._reasoning_engine._executor._inner_executor  # noqa: SLF001
+            time_bound_a = operation_a._reasoning_engine._executor._inner_executor  # noqa: SLF001
+            time_bound_b = operation_b._reasoning_engine._executor._inner_executor  # noqa: SLF001
+            reasoning_executor_a = time_bound_a._inner_executor  # noqa: SLF001
+            reasoning_executor_b = time_bound_b._inner_executor  # noqa: SLF001
             execution_engine_a = reasoning_executor_a._execution_engine  # noqa: SLF001
             execution_engine_b = reasoning_executor_b._execution_engine  # noqa: SLF001
             assert execution_engine_a is not execution_engine_b
