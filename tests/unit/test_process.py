@@ -13,14 +13,22 @@ import pytest
 from noema._process import (
     _execute_first_direct_operation,
     _execute_first_direct_session,
+    _FirstDirectContextConfiguration,
     _FirstDirectInvocationPolicy,
     _FirstDirectProcessConfiguration,
     _load_first_direct_process_configuration,
     _ProcessConfigurationError,
 )
 from noema.cognition.domain.budget import CognitiveBudget
-from noema.cognition.domain.context_composition import ContextSensitivity, ContextTrustLevel
-from noema.cognition.domain.errors import InvalidCognitiveBudgetError
+from noema.cognition.domain.context_composition import (
+    ContextCompositionPolicy,
+    ContextSensitivity,
+    ContextTrustLevel,
+)
+from noema.cognition.domain.errors import (
+    InvalidCognitiveBudgetError,
+    InvalidContextCompositionPolicyError,
+)
 from noema.cognition.domain.modes import CognitiveMode
 from noema.cognition.domain.reasoning import (
     InformationNeed,
@@ -79,6 +87,14 @@ def _valid_tables() -> dict[str, dict[str, dict[str, object]]]:
 def _toml_scalar(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float):
+        if value != value:  # NaN
+            return "nan"
+        if value == float("inf"):
+            return "inf"
+        if value == float("-inf"):
+            return "-inf"
+        return repr(value)
     if isinstance(value, int):
         return str(value)
     if isinstance(value, str):
@@ -579,6 +595,293 @@ def test_loader_accepts_blank_host_transport(tmp_path: Path) -> None:
     assert configuration.ollama_host == ""
 
 
+# --- direct.context transport (ADR-0031) --------------------------------------
+
+
+def test_existing_configuration_without_direct_context_remains_valid(tmp_path: Path) -> None:
+    path = _write_config(tmp_path, _valid_tables())
+
+    configuration = _load_first_direct_process_configuration(path)
+
+    assert configuration.context.prior_task_context_enabled is False
+    assert configuration.context.composition_policy is None
+
+
+def test_absent_context_table_produces_disabled_configuration(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    assert "context" not in tables["direct"]
+    path = _write_config(tmp_path, tables)
+
+    configuration = _load_first_direct_process_configuration(path)
+
+    assert configuration.context == _FirstDirectContextConfiguration(
+        prior_task_context_enabled=False, composition_policy=None
+    )
+
+
+def test_explicit_false_produces_disabled_configuration(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {"prior_task_context_enabled": False}
+    path = _write_config(tmp_path, tables)
+
+    configuration = _load_first_direct_process_configuration(path)
+
+    assert configuration.context.prior_task_context_enabled is False
+    assert configuration.context.composition_policy is None
+
+
+def test_false_with_minimum_relevance_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": False,
+        "minimum_relevance": 0.5,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_false_with_max_slices_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {"prior_task_context_enabled": False, "max_slices": 3}
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_true_with_both_required_values_produces_exact_policy(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 0.3,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    configuration = _load_first_direct_process_configuration(path)
+
+    assert configuration.context.prior_task_context_enabled is True
+    assert configuration.context.composition_policy == ContextCompositionPolicy(
+        minimum_relevance=0.3, max_slices=3
+    )
+
+
+def test_true_missing_minimum_relevance_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {"prior_task_context_enabled": True, "max_slices": 3}
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_true_missing_max_slices_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {"prior_task_context_enabled": True, "minimum_relevance": 0.3}
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_activation_integer_instead_of_bool_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": 1,
+        "minimum_relevance": 0.3,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_activation_string_instead_of_bool_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": "true",
+        "minimum_relevance": 0.3,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_int_instead_of_float_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 1,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_bool_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": True,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_string_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": "0.3",
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_nan_propagates_domain_validation_error(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": float("nan"),
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(InvalidContextCompositionPolicyError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_infinity_propagates_domain_validation_error(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": float("inf"),
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(InvalidContextCompositionPolicyError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_below_zero_propagates_domain_validation_error(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": -0.1,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(InvalidContextCompositionPolicyError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_minimum_relevance_above_one_propagates_domain_validation_error(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 1.1,
+        "max_slices": 3,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(InvalidContextCompositionPolicyError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_max_slices_bool_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 0.3,
+        "max_slices": True,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_max_slices_zero_propagates_domain_validation_error(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 0.3,
+        "max_slices": 0,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(InvalidContextCompositionPolicyError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_max_slices_negative_propagates_domain_validation_error(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 0.3,
+        "max_slices": -1,
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(InvalidContextCompositionPolicyError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_unknown_direct_context_key_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    tables["direct"]["context"] = {
+        "prior_task_context_enabled": True,
+        "minimum_relevance": 0.3,
+        "max_slices": 3,
+        "unexpected_key": "value",
+    }
+    path = _write_config(tmp_path, tables)
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_direct_context_not_a_table_errors(tmp_path: Path) -> None:
+    tables = _valid_tables()
+    path = _write_config(tmp_path, tables)
+    # `_write_config`/`_toml_text` only render nested dict-of-dict-of-dict
+    # tables, so this shape (`direct.context` present but scalar) is
+    # constructed by hand rather than through the fixture writer.
+    text = path.read_text(encoding="utf-8") + "\n[direct]\ncontext = 1\n"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(_ProcessConfigurationError):
+        _load_first_direct_process_configuration(path)
+
+
+def test_context_configuration_invariant_rejects_enabled_without_policy() -> None:
+    with pytest.raises(_ProcessConfigurationError):
+        _FirstDirectContextConfiguration(prior_task_context_enabled=True, composition_policy=None)
+
+
+def test_context_configuration_invariant_rejects_disabled_with_policy() -> None:
+    with pytest.raises(_ProcessConfigurationError):
+        _FirstDirectContextConfiguration(
+            prior_task_context_enabled=False,
+            composition_policy=ContextCompositionPolicy(minimum_relevance=0.3, max_slices=3),
+        )
+
+
 # --- path / search / environment (§102/§103) ---------------------------------
 
 
@@ -635,6 +938,9 @@ def _configuration() -> _FirstDirectProcessConfiguration:
                 max_tokens=100,
                 max_search_depth=0,
             ),
+        ),
+        context=_FirstDirectContextConfiguration(
+            prior_task_context_enabled=False, composition_policy=None
         ),
     )
 
@@ -694,12 +1000,16 @@ class _FakeRuntimeContext:
         workspace_budget: object,
         ollama_host: object,
         model_resource: object,
+        prior_task_context_enabled: object = False,
+        context_composition_policy: object = None,
         operation: _FakeOperation | None = None,
         entry_exception: BaseException | None = None,
     ) -> None:
         self.workspace_budget = workspace_budget
         self.ollama_host = ollama_host
         self.model_resource = model_resource
+        self.prior_task_context_enabled = prior_task_context_enabled
+        self.context_composition_policy = context_composition_policy
         self.operation = operation
         self.entry_exception = entry_exception
         self.aenter_call_count = 0
@@ -719,11 +1029,18 @@ class _FakeRuntimeContext:
 
 def _patch_runtime(monkeypatch: pytest.MonkeyPatch, context: _FakeRuntimeContext) -> None:
     def _fake_open_direct_runtime(
-        *, workspace_budget: object, ollama_host: object, model_resource: object
+        *,
+        workspace_budget: object,
+        ollama_host: object,
+        model_resource: object,
+        prior_task_context_enabled: object,
+        context_composition_policy: object,
     ) -> _FakeRuntimeContext:
         context.workspace_budget = workspace_budget
         context.ollama_host = ollama_host
         context.model_resource = model_resource
+        context.prior_task_context_enabled = prior_task_context_enabled
+        context.context_composition_policy = context_composition_policy
         return context
 
     monkeypatch.setattr("noema._process.open_direct_runtime", _fake_open_direct_runtime)
@@ -873,6 +1190,8 @@ async def test_execute_first_direct_session_opens_exactly_one_runtime_context(
     assert context.workspace_budget is configuration.workspace_budget
     assert context.ollama_host == configuration.ollama_host
     assert context.model_resource is configuration.model_resource
+    assert context.prior_task_context_enabled is configuration.context.prior_task_context_enabled
+    assert context.context_composition_policy is configuration.context.composition_policy
 
 
 @pytest.mark.asyncio
@@ -902,6 +1221,53 @@ async def test_execute_first_direct_session_uses_same_policy_for_every_call(
         assert kwargs["minimum_trust"] is policy.minimum_trust
         assert kwargs["max_total_content_size"] == policy.context_max_content_size
         assert kwargs["budget"] is policy.cognitive_budget
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_forwards_enabled_context_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 2)
+    operation = _FakeOperation()
+    configuration = _FirstDirectProcessConfiguration(
+        workspace_budget=_configuration().workspace_budget,
+        ollama_host=_configuration().ollama_host,
+        model_resource=_configuration().model_resource,
+        invocation_policy=_configuration().invocation_policy,
+        context=_FirstDirectContextConfiguration(
+            prior_task_context_enabled=True,
+            composition_policy=ContextCompositionPolicy(minimum_relevance=0.3, max_slices=3),
+        ),
+    )
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    await _execute_first_direct_session(configuration=configuration, problem_statements=("hello",))
+
+    assert context.prior_task_context_enabled is True
+    assert context.context_composition_policy == ContextCompositionPolicy(
+        minimum_relevance=0.3, max_slices=3
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_first_direct_session_forwards_disabled_context_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_uuid_sequence(monkeypatch, 2)
+    operation = _FakeOperation()
+    configuration = _configuration()
+    context = _FakeRuntimeContext(
+        workspace_budget=None, ollama_host=None, model_resource=None, operation=operation
+    )
+    _patch_runtime(monkeypatch, context)
+
+    await _execute_first_direct_session(configuration=configuration, problem_statements=("hello",))
+
+    assert context.prior_task_context_enabled is False
+    assert context.context_composition_policy is None
 
 
 @pytest.mark.asyncio

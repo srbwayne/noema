@@ -368,6 +368,7 @@ def test_planner_application_export() -> None:
     assert application.__all__ == [
         "CanonicalInputIngestor",
         "CognitiveStateOwner",
+        "ContextPackagePreparer",
         "ContextRequestAssembler",
         "DirectReasoningOperation",
         "InvalidCognitiveStateReplacementError",
@@ -375,6 +376,7 @@ def test_planner_application_export() -> None:
         "PriorTaskContextMaterializationCoherenceError",
         "PriorTaskContextMaterializer",
         "PriorTaskContextProjector",
+        "PriorTaskReasoningInputMaterializer",
         "ReasoningEngine",
         "RuntimeContentReferenceAuthority",
         "RuntimeContentReferenceConflictError",

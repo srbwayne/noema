@@ -10,12 +10,14 @@ from noema.cognition.domain.budget import CognitiveBudget
 from noema.cognition.domain.context import ContextStamp, ContextVersionMarker
 from noema.cognition.domain.context_composition import (
     ContextPackage,
+    ContextPackageZone,
     ContextRequest,
     ContextSensitivity,
+    ContextSlice,
     ContextSliceType,
     ContextTrustLevel,
 )
-from noema.cognition.domain.errors import InvalidContextPackageError, InvalidReasoningRequestError
+from noema.cognition.domain.errors import InvalidReasoningRequestError
 from noema.cognition.domain.modes import CognitiveMode
 from noema.cognition.domain.reasoning import ReasoningRequest, ReasoningStrategy
 
@@ -51,6 +53,30 @@ def _context_request(
     )
 
 
+def _empty_package(
+    *,
+    required_slice_types: tuple[ContextSliceType, ...] = (),
+) -> ContextPackage:
+    return ContextPackage(
+        request=_context_request(required_slice_types=required_slice_types), slices=()
+    )
+
+
+def _package_with_one_slice() -> ContextPackage:
+    context_request = _context_request(required_slice_types=(ContextSliceType.TASK,))
+    task_slice = ContextSlice(
+        slice_type=ContextSliceType.TASK,
+        content_ref="content:task-1",
+        zone=ContextPackageZone.COGNITIVE_STATE,
+        sensitivity=ContextSensitivity.INTERNAL,
+        trust=ContextTrustLevel.UNVERIFIED,
+        instruction_authority=None,
+        provenance_ref="provenance:1",
+        content_size=10,
+    )
+    return ContextPackage(request=context_request, slices=(task_slice,))
+
+
 def _budget() -> CognitiveBudget:
     # Fixture data only. These numbers are not a runtime CognitiveBudget policy.
     return CognitiveBudget(
@@ -75,8 +101,9 @@ def test_is_synchronous() -> None:
 def test_has_exact_keyword_only_signature() -> None:
     signature = inspect.signature(assemble_direct_reasoning_request)
     parameters = list(signature.parameters)
-    assert parameters == ["context_request", "problem_ref", "problem_statement", "budget"]
+    assert parameters == ["context", "problem_ref", "problem_statement", "budget"]
     assert "strategy" not in signature.parameters
+    assert "context_request" not in signature.parameters
     for parameter in signature.parameters.values():
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
         assert parameter.default is inspect.Parameter.empty
@@ -84,7 +111,7 @@ def test_has_exact_keyword_only_signature() -> None:
 
 def test_type_hints_are_exact() -> None:
     hints = get_type_hints(assemble_direct_reasoning_request)
-    assert hints["context_request"] is ContextRequest
+    assert hints["context"] is ContextPackage
     assert hints["problem_ref"] is str
     assert hints["problem_statement"] is str
     assert hints["budget"] is CognitiveBudget
@@ -99,12 +126,19 @@ def test_module_does_not_reference_context_composer() -> None:
     assert not hasattr(module, "ContextCandidate")
 
 
+def test_module_never_constructs_a_context_package() -> None:
+    import noema.cognition.application.direct_reasoning_request_assembler as module
+
+    source = inspect.getsource(module)
+    assert "ContextPackage(" not in source
+
+
 def test_happy_path_returns_reasoning_request() -> None:
-    context_request = _context_request()
+    context = _empty_package()
     budget = _budget()
 
     result = assemble_direct_reasoning_request(
-        context_request=context_request,
+        context=context,
         problem_ref="problem:123",
         problem_statement="Determine an answer.",
         budget=budget,
@@ -117,24 +151,38 @@ def test_happy_path_returns_reasoning_request() -> None:
     assert isinstance(result.context, ContextPackage)
 
 
-def test_context_request_identity_is_preserved() -> None:
-    context_request = _context_request()
+def test_context_package_identity_is_preserved() -> None:
+    context = _empty_package()
 
     result = assemble_direct_reasoning_request(
-        context_request=context_request,
+        context=context,
         problem_ref="problem:123",
         problem_statement="Determine an answer.",
         budget=_budget(),
     )
 
-    assert result.context.request is context_request
+    assert result.context is context
+
+
+def test_non_empty_context_package_identity_is_preserved() -> None:
+    context = _package_with_one_slice()
+
+    result = assemble_direct_reasoning_request(
+        context=context,
+        problem_ref="problem:123",
+        problem_statement="Determine an answer.",
+        budget=_budget(),
+    )
+
+    assert result.context is context
+    assert result.context.slices == context.slices
 
 
 def test_budget_identity_is_preserved() -> None:
     budget = _budget()
 
     result = assemble_direct_reasoning_request(
-        context_request=_context_request(),
+        context=_empty_package(),
         problem_ref="problem:123",
         problem_statement="Determine an answer.",
         budget=budget,
@@ -143,21 +191,9 @@ def test_budget_identity_is_preserved() -> None:
     assert result.budget is budget
 
 
-def test_context_package_has_empty_slices() -> None:
-    result = assemble_direct_reasoning_request(
-        context_request=_context_request(),
-        problem_ref="problem:123",
-        problem_statement="Determine an answer.",
-        budget=_budget(),
-    )
-
-    assert result.context.slices == ()
-    assert result.context.total_content_size == 0
-
-
 def test_does_not_normalize_problem_inputs() -> None:
     result = assemble_direct_reasoning_request(
-        context_request=_context_request(),
+        context=_empty_package(),
         problem_ref="problem:123",
         problem_statement="  Determine an answer.  ",
         budget=_budget(),
@@ -166,22 +202,21 @@ def test_does_not_normalize_problem_inputs() -> None:
     assert result.problem_statement == "  Determine an answer.  "
 
 
-def test_required_slice_types_rejection_propagates() -> None:
-    context_request = _context_request(required_slice_types=(ContextSliceType.TASK,))
+def test_strategy_is_always_direct_regardless_of_context() -> None:
+    result = assemble_direct_reasoning_request(
+        context=_package_with_one_slice(),
+        problem_ref="problem:123",
+        problem_statement="Determine an answer.",
+        budget=_budget(),
+    )
 
-    with pytest.raises(InvalidContextPackageError):
-        assemble_direct_reasoning_request(
-            context_request=context_request,
-            problem_ref="problem:123",
-            problem_statement="Determine an answer.",
-            budget=_budget(),
-        )
+    assert result.strategy is ReasoningStrategy.DIRECT
 
 
 def test_invalid_problem_ref_propagates() -> None:
     with pytest.raises(InvalidReasoningRequestError):
         assemble_direct_reasoning_request(
-            context_request=_context_request(),
+            context=_empty_package(),
             problem_ref="",
             problem_statement="Determine an answer.",
             budget=_budget(),
@@ -191,7 +226,7 @@ def test_invalid_problem_ref_propagates() -> None:
 def test_invalid_problem_statement_propagates() -> None:
     with pytest.raises(InvalidReasoningRequestError):
         assemble_direct_reasoning_request(
-            context_request=_context_request(),
+            context=_empty_package(),
             problem_ref="problem:123",
             problem_statement="",
             budget=_budget(),
@@ -201,17 +236,17 @@ def test_invalid_problem_statement_propagates() -> None:
 def test_invalid_budget_propagates() -> None:
     with pytest.raises(InvalidReasoningRequestError):
         assemble_direct_reasoning_request(
-            context_request=_context_request(),
+            context=_empty_package(),
             problem_ref="problem:123",
             problem_statement="Determine an answer.",
             budget=object(),  # type: ignore[arg-type]
         )
 
 
-def test_invalid_context_request_propagates() -> None:
-    with pytest.raises(InvalidContextPackageError):
+def test_invalid_context_propagates_through_reasoning_request_validation() -> None:
+    with pytest.raises(InvalidReasoningRequestError):
         assemble_direct_reasoning_request(
-            context_request=object(),  # type: ignore[arg-type]
+            context=object(),  # type: ignore[arg-type]
             problem_ref="problem:123",
             problem_statement="Determine an answer.",
             budget=_budget(),
