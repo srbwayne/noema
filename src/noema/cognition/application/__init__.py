@@ -4,6 +4,9 @@ from .canonical_input_ingestor import CanonicalInputIngestor
 from .cognitive_budget_admitting_reasoning_executor import (
     CognitiveBudgetAdmittingReasoningExecutor,
 )
+from .cognitive_budget_time_bound_reasoning_executor import (
+    CognitiveBudgetTimeBoundReasoningExecutor,
+)
 from .cognitive_state_owner import (
     CognitiveStateOwner,
     InvalidCognitiveStateReplacementError,
@@ -30,6 +33,7 @@ from .runtime_content_reference_authority import (
 __all__ = [
     "CanonicalInputIngestor",
     "CognitiveBudgetAdmittingReasoningExecutor",
+    "CognitiveBudgetTimeBoundReasoningExecutor",
     "CognitiveStateOwner",
     "ContextPackagePreparer",
     "ContextRequestAssembler",

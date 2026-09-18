@@ -368,6 +368,7 @@ def test_planner_application_export() -> None:
     assert application.__all__ == [
         "CanonicalInputIngestor",
         "CognitiveBudgetAdmittingReasoningExecutor",
+        "CognitiveBudgetTimeBoundReasoningExecutor",
         "CognitiveStateOwner",
         "ContextPackagePreparer",
         "ContextRequestAssembler",
