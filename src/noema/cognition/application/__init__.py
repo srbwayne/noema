@@ -5,6 +5,7 @@ from .cognitive_state_owner import (
     CognitiveStateOwner,
     InvalidCognitiveStateReplacementError,
 )
+from .context_package_preparer import ContextPackagePreparer
 from .context_request_assembler import ContextRequestAssembler
 from .direct_reasoning_operation import DirectReasoningOperation
 from .direct_reasoning_request_assembler import assemble_direct_reasoning_request
@@ -15,6 +16,7 @@ from .prior_task_context_materializer import (
     UnsupportedPriorTaskContextSliceError,
 )
 from .prior_task_context_projector import PriorTaskContextProjector
+from .prior_task_reasoning_input_materializer import PriorTaskReasoningInputMaterializer
 from .reasoning_engine import ReasoningEngine
 from .runtime_content_reference_authority import (
     RuntimeContentReferenceAuthority,
@@ -25,6 +27,7 @@ from .runtime_content_reference_authority import (
 __all__ = [
     "CanonicalInputIngestor",
     "CognitiveStateOwner",
+    "ContextPackagePreparer",
     "ContextRequestAssembler",
     "DirectReasoningOperation",
     "InvalidCognitiveStateReplacementError",
@@ -32,6 +35,7 @@ __all__ = [
     "PriorTaskContextMaterializationCoherenceError",
     "PriorTaskContextMaterializer",
     "PriorTaskContextProjector",
+    "PriorTaskReasoningInputMaterializer",
     "ReasoningEngine",
     "RuntimeContentReferenceAuthority",
     "RuntimeContentReferenceConflictError",

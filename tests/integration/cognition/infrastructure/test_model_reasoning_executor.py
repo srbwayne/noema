@@ -24,7 +24,11 @@ from noema.cognition.domain.reasoning import (
     ReasoningStrategy,
 )
 from noema.cognition.infrastructure import ModelReasoningExecutor
-from noema.cognition.ports import ReasoningExecutionError, ReasoningExecutor
+from noema.cognition.ports import (
+    ReasoningExecutionError,
+    ReasoningExecutor,
+    ReasoningInputMaterializer,
+)
 from noema.model_router.application import ModelExecutionEngine
 from noema.model_router.domain import (
     AmbiguousModelSelectionError,
@@ -159,25 +163,59 @@ class SpyModelExecutionEngine:
         return self._result  # type: ignore[return-value]
 
 
+class SpyInputMaterializer:
+    """A ReasoningInputMaterializer test double recording calls and returning a fixed string."""
+
+    def __init__(self, result: object) -> None:
+        self._result = result
+        self.received_requests: list[ReasoningRequest] = []
+        self.call_count = 0
+
+    def materialize(self, request: ReasoningRequest) -> str:
+        self.received_requests.append(request)
+        self.call_count += 1
+        if isinstance(self._result, BaseException):
+            raise self._result
+        return self._result  # type: ignore[return-value]
+
+
+def _executor(
+    *,
+    engine: object,
+    materializer: object | None = None,
+    selection: ModelSelectionRequest | None = None,
+) -> ModelReasoningExecutor:
+    return ModelReasoningExecutor(
+        execution_engine=engine,  # type: ignore[arg-type]
+        selection_request=selection if selection is not None else selection_request(),
+        input_materializer=materializer
+        if materializer is not None
+        else SpyInputMaterializer("materialized input"),
+    )
+
+
 def test_model_reasoning_executor_has_exact_slots() -> None:
-    assert ModelReasoningExecutor.__slots__ == ("_execution_engine", "_selection_request")
+    assert ModelReasoningExecutor.__slots__ == (
+        "_execution_engine",
+        "_selection_request",
+        "_input_materializer",
+    )
 
 
 def test_model_reasoning_executor_instances_have_no_dict() -> None:
-    executor = ModelReasoningExecutor(
-        execution_engine=SpyModelExecutionEngine(None),  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=SpyModelExecutionEngine(None))
     assert not hasattr(executor, "__dict__")
 
 
 def test_model_reasoning_executor_constructor_is_keyword_only() -> None:
     engine = SpyModelExecutionEngine(None)
+    materializer = SpyInputMaterializer("x")
     with pytest.raises(TypeError):
-        ModelReasoningExecutor(engine, selection_request())  # type: ignore[misc,arg-type]
+        ModelReasoningExecutor(engine, selection_request(), materializer)  # type: ignore[misc,arg-type]
     ModelReasoningExecutor(
         execution_engine=engine,  # type: ignore[arg-type]
         selection_request=selection_request(),
+        input_materializer=materializer,
     )
 
 
@@ -188,6 +226,7 @@ def test_model_reasoning_executor_has_exact_type_hints() -> None:
     assert constructor_hints == {
         "execution_engine": ModelExecutionEngine,
         "selection_request": ModelSelectionRequest,
+        "input_materializer": ReasoningInputMaterializer,
         "return": type(None),
     }
     assert execute_hints == {
@@ -202,6 +241,7 @@ def test_model_reasoning_executor_rejects_non_model_selection_request() -> None:
         ModelReasoningExecutor(
             execution_engine=engine,  # type: ignore[arg-type]
             selection_request=None,  # type: ignore[arg-type]
+            input_materializer=SpyInputMaterializer("x"),
         )
 
 
@@ -220,21 +260,33 @@ def test_model_reasoning_executor_is_not_a_reasoning_executor_subclass() -> None
 
 def test_model_reasoning_executor_construction_has_no_execution() -> None:
     engine = SpyModelExecutionEngine(None)
-    ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    _executor(engine=engine)
     assert engine.call_count == 0
+
+
+def test_model_reasoning_executor_does_not_import_prior_task_materializer_modules() -> None:
+    import ast
+    import inspect
+
+    import noema.cognition.infrastructure.model_reasoning_executor as module
+
+    tree = ast.parse(inspect.getsource(module))
+    imported_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom | ast.Import):
+            imported_names.update(alias.name for alias in node.names)
+
+    assert "PriorTaskContextMaterializer" not in imported_names
+    assert "PriorTaskReasoningInputMaterializer" not in imported_names
+    assert not hasattr(module, "PriorTaskContextMaterializer")
+    assert not hasattr(module, "PriorTaskReasoningInputMaterializer")
 
 
 @pytest.mark.asyncio
 async def test_model_reasoning_executor_executes_direct_strategy_with_empty_context() -> None:
     result = ModelExecutionResult(resource=model_resource(), output_text="answer")
     engine = SpyModelExecutionEngine(result)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
     request = reasoning_request()
 
     outcome = await executor.execute(request)
@@ -249,10 +301,8 @@ async def test_model_reasoning_executor_rejects_every_non_direct_strategy(
     strategy: ReasoningStrategy,
 ) -> None:
     engine = SpyModelExecutionEngine(None)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    materializer = SpyInputMaterializer("x")
+    executor = _executor(engine=engine, materializer=materializer)
     request = reasoning_request(strategy=strategy)
 
     with pytest.raises(
@@ -261,22 +311,91 @@ async def test_model_reasoning_executor_rejects_every_non_direct_strategy(
         await executor.execute(request)
 
     assert engine.call_count == 0
+    assert materializer.call_count == 0
 
 
 @pytest.mark.asyncio
-async def test_model_reasoning_executor_rejects_context_slices() -> None:
-    engine = SpyModelExecutionEngine(None)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+async def test_model_reasoning_executor_accepts_non_empty_context_slices() -> None:
+    result = ModelExecutionResult(resource=model_resource(), output_text="answer")
+    engine = SpyModelExecutionEngine(result)
+    executor = _executor(engine=engine)
     request = reasoning_request(context=context_package_with_one_slice())
 
-    with pytest.raises(
-        ReasoningExecutionError,
-        match="model reasoning executor does not support context slices",
-    ):
-        await executor.execute(request)
+    outcome = await executor.execute(request)
+
+    assert isinstance(outcome, ReasoningOutcome)
+    assert engine.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_model_reasoning_executor_calls_input_materializer_once_with_exact_request() -> None:
+    result = ModelExecutionResult(resource=model_resource(), output_text="answer")
+    engine = SpyModelExecutionEngine(result)
+    materializer = SpyInputMaterializer("materialized text")
+    executor = _executor(engine=engine, materializer=materializer)
+    request = reasoning_request()
+
+    await executor.execute(request)
+
+    assert materializer.call_count == 1
+    assert materializer.received_requests == [request]
+
+
+@pytest.mark.asyncio
+async def test_model_reasoning_executor_passes_materialized_text_to_engine() -> None:
+    result = ModelExecutionResult(resource=model_resource(), output_text="answer")
+    engine = SpyModelExecutionEngine(result)
+    materializer = SpyInputMaterializer("materialized text")
+    executor = _executor(engine=engine, materializer=materializer)
+
+    await executor.execute(reasoning_request())
+
+    assert engine.received_input_texts == ["materialized text"]
+
+
+@pytest.mark.asyncio
+async def test_model_reasoning_executor_empty_context_materialized_string_passed_unchanged() -> (
+    None
+):
+    result = ModelExecutionResult(resource=model_resource(), output_text="answer")
+    engine = SpyModelExecutionEngine(result)
+    materializer = SpyInputMaterializer("Determine an answer.")
+    executor = _executor(engine=engine, materializer=materializer)
+
+    await executor.execute(reasoning_request(problem_statement="Determine an answer."))
+
+    assert engine.received_input_texts == ["Determine an answer."]
+
+
+@pytest.mark.asyncio
+async def test_model_reasoning_executor_materialization_failure_prevents_engine_call() -> None:
+    engine = SpyModelExecutionEngine(
+        ModelExecutionResult(resource=model_resource(), output_text="x")
+    )
+    materialization_error = ValueError("broken materializer contract")
+    materializer = SpyInputMaterializer(materialization_error)
+    executor = _executor(engine=engine, materializer=materializer)
+
+    with pytest.raises(ValueError) as raised:
+        await executor.execute(reasoning_request())
+
+    assert raised.value is materialization_error
+    assert engine.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_model_reasoning_executor_materialization_failure_is_not_translated() -> None:
+    from noema.cognition.application import RuntimeContentReferenceNotFoundError
+
+    engine = SpyModelExecutionEngine(
+        ModelExecutionResult(resource=model_resource(), output_text="x")
+    )
+    materialization_error = RuntimeContentReferenceNotFoundError("missing content_ref")
+    materializer = SpyInputMaterializer(materialization_error)
+    executor = _executor(engine=engine, materializer=materializer)
+
+    with pytest.raises(RuntimeContentReferenceNotFoundError):
+        await executor.execute(reasoning_request())
 
     assert engine.call_count == 0
 
@@ -286,10 +405,7 @@ async def test_model_reasoning_executor_passes_exact_selection_request_identity(
     the_selection_request = selection_request()
     result = ModelExecutionResult(resource=model_resource(), output_text="answer")
     engine = SpyModelExecutionEngine(result)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=the_selection_request,
-    )
+    executor = _executor(engine=engine, selection=the_selection_request)
     request = reasoning_request()
 
     await executor.execute(request)
@@ -299,28 +415,10 @@ async def test_model_reasoning_executor_passes_exact_selection_request_identity(
 
 
 @pytest.mark.asyncio
-async def test_model_reasoning_executor_preserves_problem_statement_exactly() -> None:
-    result = ModelExecutionResult(resource=model_resource(), output_text="answer")
-    engine = SpyModelExecutionEngine(result)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
-    request = reasoning_request(problem_statement="  Determine an answer.  ")
-
-    await executor.execute(request)
-
-    assert engine.received_input_texts == ["  Determine an answer.  "]
-
-
-@pytest.mark.asyncio
 async def test_model_reasoning_executor_calls_engine_exactly_once() -> None:
     result = ModelExecutionResult(resource=model_resource(), output_text="answer")
     engine = SpyModelExecutionEngine(result)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     await executor.execute(reasoning_request())
 
@@ -331,10 +429,7 @@ async def test_model_reasoning_executor_calls_engine_exactly_once() -> None:
 async def test_model_reasoning_executor_returns_expected_reasoning_outcome() -> None:
     result = ModelExecutionResult(resource=model_resource(), output_text="answer")
     engine = SpyModelExecutionEngine(result)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
     request = reasoning_request()
 
     outcome = await executor.execute(request)
@@ -352,10 +447,7 @@ async def test_model_reasoning_executor_returns_expected_reasoning_outcome() -> 
 async def test_model_reasoning_executor_preserves_output_whitespace() -> None:
     result = ModelExecutionResult(resource=model_resource(), output_text="  answer  ")
     engine = SpyModelExecutionEngine(result)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     outcome = await executor.execute(reasoning_request())
 
@@ -366,10 +458,7 @@ async def test_model_reasoning_executor_preserves_output_whitespace() -> None:
 async def test_model_reasoning_executor_translates_model_execution_error() -> None:
     expected_error = ModelExecutionError("failure")
     engine = SpyModelExecutionEngine(expected_error)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     with pytest.raises(ReasoningExecutionError, match="model reasoning execution failed") as raised:
         await executor.execute(reasoning_request())
@@ -382,10 +471,7 @@ async def test_model_reasoning_executor_translates_model_execution_error() -> No
 async def test_model_reasoning_executor_translates_no_eligible_model_resource_error() -> None:
     expected_error = NoEligibleModelResourceError("no eligible resource")
     engine = SpyModelExecutionEngine(expected_error)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     with pytest.raises(ReasoningExecutionError, match="model reasoning execution failed") as raised:
         await executor.execute(reasoning_request())
@@ -398,10 +484,7 @@ async def test_model_reasoning_executor_translates_no_eligible_model_resource_er
 async def test_model_reasoning_executor_translates_ambiguous_model_selection_error() -> None:
     expected_error = AmbiguousModelSelectionError("ambiguous")
     engine = SpyModelExecutionEngine(expected_error)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     with pytest.raises(ReasoningExecutionError, match="model reasoning execution failed") as raised:
         await executor.execute(reasoning_request())
@@ -413,10 +496,7 @@ async def test_model_reasoning_executor_translates_ambiguous_model_selection_err
 @pytest.mark.asyncio
 async def test_model_reasoning_executor_does_not_retry_on_translated_failure() -> None:
     engine = SpyModelExecutionEngine(ModelExecutionError("failure"))
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     with pytest.raises(ReasoningExecutionError):
         await executor.execute(reasoning_request())
@@ -428,10 +508,7 @@ async def test_model_reasoning_executor_does_not_retry_on_translated_failure() -
 async def test_model_reasoning_executor_does_not_mask_unexpected_errors() -> None:
     expected_error = RuntimeError("programming failure")
     engine = SpyModelExecutionEngine(expected_error)
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=selection_request(),
-    )
+    executor = _executor(engine=engine)
 
     with pytest.raises(RuntimeError) as raised:
         await executor.execute(reasoning_request())
@@ -444,10 +521,7 @@ async def test_model_reasoning_executor_is_reusable_across_independent_calls() -
     result = ModelExecutionResult(resource=model_resource(), output_text="answer")
     engine = SpyModelExecutionEngine(result)
     the_selection_request = selection_request()
-    executor = ModelReasoningExecutor(
-        execution_engine=engine,  # type: ignore[arg-type]
-        selection_request=the_selection_request,
-    )
+    executor = _executor(engine=engine, selection=the_selection_request)
 
     await executor.execute(reasoning_request(problem_ref="problem:a"))
     await executor.execute(reasoning_request(problem_ref="problem:b"))

@@ -13,10 +13,24 @@ package may import this module; only ``noema.main`` does.
 
 A process session opens exactly one runtime context and attempts each
 supplied problem statement's operation in order, each with its own freshly
-generated ``task_ref``/``problem_ref``; it is not a conversation -- every
-operation's model input is that operation's problem statement alone, with no
-previous problem or response materialized into it, no session/conversation
-identifier, and no durable or cross-process continuity.
+generated ``task_ref``/``problem_ref``; it is still not a conversation --
+there is no session/conversation identifier, no durable or cross-process
+continuity, and model responses are never retained or materialized into any
+later operation's input (ADR-0031's same-runtime prior-TASK continuity is
+input-only).
+
+When ``[direct.context]`` is absent or ``prior_task_context_enabled`` is
+``false``, every operation's model input remains exactly that operation's
+own problem statement, unchanged, with nothing else materialized into it --
+the pre-ADR-0031 behavior. When prior-TASK context activation is explicitly
+enabled and this same runtime instance already holds one or more eligible
+prior canonical TASK entries, ``noema.bootstrap.open_direct_runtime``'s
+graph may materialize selected prior TASK inputs into the current
+operation's model input, framed as non-authoritative historical context
+alongside the current problem statement -- this module itself selects no
+context policy and performs no materialization; it only forwards the
+already-resolved activation configuration to ``open_direct_runtime`` once
+per session (ADR-0031).
 """
 
 from __future__ import annotations
@@ -33,6 +47,7 @@ from noema.bootstrap import open_direct_runtime
 from noema.cognition.application import DirectReasoningOperation
 from noema.cognition.domain.budget import CognitiveBudget
 from noema.cognition.domain.context_composition import (
+    ContextCompositionPolicy,
     ContextSensitivity,
     ContextTrustLevel,
 )
@@ -68,6 +83,32 @@ class _FirstDirectInvocationPolicy:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _FirstDirectContextConfiguration:
+    """The resolved optional prior-TASK context activation policy (ADR-0031).
+
+    ``composition_policy`` is ``None`` iff ``prior_task_context_enabled`` is
+    ``False``: no numeric ``ContextCompositionPolicy`` is ever fabricated for
+    a disabled runtime.
+    """
+
+    prior_task_context_enabled: bool
+    composition_policy: ContextCompositionPolicy | None
+
+    def __post_init__(self) -> None:
+        """Enforce the enabled/policy pairing invariant."""
+        if self.prior_task_context_enabled:
+            if not isinstance(self.composition_policy, ContextCompositionPolicy):
+                raise _ProcessConfigurationError(
+                    "composition_policy must be a ContextCompositionPolicy when "
+                    "prior_task_context_enabled is True"
+                )
+        elif self.composition_policy is not None:
+            raise _ProcessConfigurationError(
+                "composition_policy must be None when prior_task_context_enabled is False"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _FirstDirectProcessConfiguration:
     """The fully resolved configuration for one first-DIRECT process run."""
 
@@ -75,11 +116,12 @@ class _FirstDirectProcessConfiguration:
     ollama_host: str
     model_resource: ModelResourceCapabilities
     invocation_policy: _FirstDirectInvocationPolicy
+    context: _FirstDirectContextConfiguration
 
 
 _ROOT_TABLES = frozenset({"runtime", "direct"})
 _RUNTIME_TABLES = frozenset({"workspace", "ollama", "model"})
-_DIRECT_TABLES = frozenset({"policy", "budget"})
+_DIRECT_TABLES = frozenset({"policy", "budget", "context"})
 
 _WORKSPACE_KEYS = frozenset({"max_active_items", "max_working_items", "max_peripheral_items"})
 _OLLAMA_KEYS = frozenset({"host"})
@@ -98,6 +140,7 @@ _BUDGET_KEYS = frozenset(
         "max_search_depth",
     }
 )
+_CONTEXT_KEYS = frozenset({"prior_task_context_enabled", "minimum_relevance", "max_slices"})
 
 _CAPABILITY_VALUES = {capability.value: capability for capability in ModelCapability}
 _MODE_VALUES = {mode.value: mode for mode in CognitiveMode}
@@ -144,6 +187,35 @@ def _require_int(table: dict[str, object], key: str, path: str) -> int:
     value = table[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise _ProcessConfigurationError(f"{path}.{key} must be an integer")
+    return value
+
+
+def _require_bool(table: dict[str, object], key: str, path: str) -> bool:
+    """Return the required boolean transport value at ``path``.``key``.
+
+    Rejects ``int`` (including ``0``/``1``) and ``str`` (including
+    ``"true"``/``"false"``) explicitly -- only an exact TOML boolean is
+    admissible.
+    """
+    if key not in table:
+        raise _ProcessConfigurationError(f"missing required key: {path}.{key}")
+    value = table[key]
+    if not isinstance(value, bool):
+        raise _ProcessConfigurationError(f"{path}.{key} must be a bool")
+    return value
+
+
+def _require_float(table: dict[str, object], key: str, path: str) -> float:
+    """Return the required float transport value at ``path``.``key``.
+
+    Rejects ``bool`` (a subtype of ``int``), plain ``int``, and ``str``
+    explicitly -- only an exact TOML float is admissible.
+    """
+    if key not in table:
+        raise _ProcessConfigurationError(f"missing required key: {path}.{key}")
+    value = table[key]
+    if isinstance(value, bool) or not isinstance(value, float):
+        raise _ProcessConfigurationError(f"{path}.{key} must be a float")
     return value
 
 
@@ -200,6 +272,53 @@ def _convert_max_cost(value: str, path: str) -> Decimal:
         return Decimal(value)
     except InvalidOperation as exc:
         raise _ProcessConfigurationError(f"{path} is not a valid decimal string: {value}") from exc
+
+
+def _load_context_configuration(
+    direct_table: dict[str, object],
+) -> _FirstDirectContextConfiguration:
+    """Resolve the optional ``direct.context`` table (ADR-0031).
+
+    Table absent -- same semantic result as an explicit
+    ``prior_task_context_enabled = false``: disabled, ``composition_policy``
+    is ``None``. When present and disabled, ``minimum_relevance``/
+    ``max_slices`` must not be supplied -- no numeric policy is ever
+    fabricated for a disabled feature. When present and enabled, both
+    numeric keys are mandatory and are converted into exactly one
+    ``ContextCompositionPolicy``; its own ``__post_init__`` remains the
+    semantic validator (finite ``minimum_relevance`` in ``[0.0, 1.0]``,
+    positive ``max_slices``).
+    """
+    context_table = direct_table.get("context")
+    if context_table is None:
+        return _FirstDirectContextConfiguration(
+            prior_task_context_enabled=False, composition_policy=None
+        )
+    if not isinstance(context_table, dict):
+        raise _ProcessConfigurationError("direct.context must be a table")
+
+    _require_no_unknown_keys(context_table, _CONTEXT_KEYS, "direct.context")
+    enabled = _require_bool(context_table, "prior_task_context_enabled", "direct.context")
+
+    if not enabled:
+        if "minimum_relevance" in context_table or "max_slices" in context_table:
+            raise _ProcessConfigurationError(
+                "direct.context.minimum_relevance and direct.context.max_slices must not "
+                "be supplied when prior_task_context_enabled is false"
+            )
+        return _FirstDirectContextConfiguration(
+            prior_task_context_enabled=False, composition_policy=None
+        )
+
+    minimum_relevance = _require_float(context_table, "minimum_relevance", "direct.context")
+    max_slices = _require_int(context_table, "max_slices", "direct.context")
+    composition_policy = ContextCompositionPolicy(
+        minimum_relevance=minimum_relevance,
+        max_slices=max_slices,
+    )
+    return _FirstDirectContextConfiguration(
+        prior_task_context_enabled=True, composition_policy=composition_policy
+    )
 
 
 def _load_first_direct_process_configuration(path: Path) -> _FirstDirectProcessConfiguration:
@@ -296,12 +415,14 @@ def _load_first_direct_process_configuration(path: Path) -> _FirstDirectProcessC
         context_max_content_size=context_max_content_size,
         cognitive_budget=cognitive_budget,
     )
+    context_configuration = _load_context_configuration(direct_table)
 
     return _FirstDirectProcessConfiguration(
         workspace_budget=workspace_budget,
         ollama_host=ollama_host,
         model_resource=model_resource_capabilities,
         invocation_policy=invocation_policy,
+        context=context_configuration,
     )
 
 
@@ -320,10 +441,16 @@ async def _execute_first_direct_operation(
     ``problem_statement`` is forwarded exactly as given; ``goal_ref`` is
     fixed to ``None`` (first-process policy, not yet goal-integrated);
     ``required_slice_types``, ``forbidden_slice_types``, and
-    ``allowed_authorities`` are empty and ``max_age`` is ``None`` (derived
-    from the current no-context-retrieval first-DIRECT contract); every
-    other argument comes from ``policy`` unchanged, including the same
-    immutable ``CognitiveBudget`` object.
+    ``allowed_authorities`` are always the empty tuple and ``max_age`` is
+    always ``None`` -- this function supplies only this fixed empty baseline
+    and selects no context policy of its own. ``ContextPackagePreparer`` may
+    still conditionally augment that baseline with ``ContextSliceType.TASK``
+    (ADR-0031) when the runtime's prior-TASK context activation is enabled
+    and at least one eligible prior canonical TASK has already been
+    projected in this same runtime instance; this function neither knows
+    about nor controls that augmentation. Every other argument comes from
+    ``policy`` unchanged, including the same immutable ``CognitiveBudget``
+    object.
 
     This function does not open a runtime context, does not decide whether a
     process session continues past it, and does not catch, translate, or
@@ -391,6 +518,8 @@ async def _execute_first_direct_session(
                     workspace_budget=configuration.workspace_budget,
                     ollama_host=configuration.ollama_host,
                     model_resource=configuration.model_resource,
+                    prior_task_context_enabled=configuration.context.prior_task_context_enabled,
+                    context_composition_policy=configuration.context.composition_policy,
                 )
             )
         except ValueError as exc:

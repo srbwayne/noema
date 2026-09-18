@@ -15,11 +15,16 @@ from ollama import AsyncClient
 from noema.cognition.application import (
     CanonicalInputIngestor,
     CognitiveStateOwner,
+    ContextPackagePreparer,
     ContextRequestAssembler,
     DirectReasoningOperation,
+    PriorTaskContextMaterializer,
+    PriorTaskContextProjector,
+    PriorTaskReasoningInputMaterializer,
     ReasoningEngine,
     RuntimeContentReferenceAuthority,
 )
+from noema.cognition.domain.context_composition import ContextComposer, ContextCompositionPolicy
 from noema.cognition.domain.situation import SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
 from noema.cognition.infrastructure import ModelReasoningExecutor
@@ -42,17 +47,25 @@ async def open_direct_runtime(
     workspace_budget: WorkspaceBudget,
     ollama_host: str,
     model_resource: ModelResourceCapabilities,
+    prior_task_context_enabled: bool,
+    context_composition_policy: ContextCompositionPolicy | None,
 ) -> AsyncIterator[DirectReasoningOperation]:
     """Construct one first-DIRECT runtime graph and scope its provider client.
 
     Receives already-resolved configuration only: a ``WorkspaceBudget`` for a
     fresh runtime-instance ``CognitiveWorkspace``/``SituationModel`` pair (the
     owner receives already-valid initial snapshots, per ADR-0028), an explicit
-    Ollama host string, and the single ``ModelResourceCapabilities`` candidate
-    this runtime will offer for selection. It selects no runtime policy of its
-    own: the required capability (``ModelCapability.TEXT_GENERATION``) and the
-    singleton candidate set are fixed realizations of already-frozen decisions,
-    not choices made here.
+    Ollama host string, the single ``ModelResourceCapabilities`` candidate
+    this runtime will offer for selection, and the process boundary's
+    already-resolved prior-TASK context activation decision (ADR-0031):
+    ``prior_task_context_enabled`` and, when enabled, one already-validated
+    ``ContextCompositionPolicy`` -- this function never receives raw
+    ``minimum_relevance``/``max_slices`` values and constructs no
+    ``ContextCompositionPolicy`` of its own; the process boundary already
+    converted them into their domain object. It selects no other runtime
+    policy of its own: the required capability
+    (``ModelCapability.TEXT_GENERATION``) and the singleton candidate set are
+    fixed realizations of already-frozen decisions, not choices made here.
 
     ``ollama_host`` has no owning domain value object, so this function
     rejects a non-string or blank value before constructing any provider
@@ -61,6 +74,11 @@ async def open_direct_runtime(
     bypassing the explicit host this runtime was configured with. The exact
     supplied string is otherwise passed through unchanged, with no
     stripping, scheme insertion, or other normalization.
+
+    ``prior_task_context_enabled`` must be an exact ``bool``, and it must be
+    paired consistently with ``context_composition_policy``: ``True`` requires
+    an actual ``ContextCompositionPolicy``, ``False`` requires ``None``. An
+    inconsistent pair raises ``TypeError`` rather than being silently repaired.
 
     The Ollama ``AsyncClient`` this graph depends on is constructed and owned
     by this context: entering the context creates it, and exiting the
@@ -83,12 +101,25 @@ async def open_direct_runtime(
     runtime instances, each with its own ``CognitiveWorkspace``,
     ``SituationModel``, ``CognitiveStateOwner``, ``RuntimeContentReferenceAuthority``,
     and provider client, even when given the same immutable
-    ``workspace_budget``/``model_resource`` configuration objects.
+    ``workspace_budget``/``model_resource``/``context_composition_policy``
+    configuration objects.
     """
     if not isinstance(ollama_host, str):
         raise TypeError("ollama_host must be a string")
     if not ollama_host.strip():
         raise ValueError("ollama_host must be a non-empty string")
+    if not isinstance(prior_task_context_enabled, bool):
+        raise TypeError("prior_task_context_enabled must be a bool")
+    if prior_task_context_enabled:
+        if not isinstance(context_composition_policy, ContextCompositionPolicy):
+            raise TypeError(
+                "context_composition_policy must be a ContextCompositionPolicy when "
+                "prior_task_context_enabled is True"
+            )
+    elif context_composition_policy is not None:
+        raise TypeError(
+            "context_composition_policy must be None when prior_task_context_enabled is False"
+        )
 
     async with AsyncClient(host=ollama_host) as client:
         workspace = CognitiveWorkspace(budget=workspace_budget)
@@ -96,7 +127,28 @@ async def open_direct_runtime(
         state_owner = CognitiveStateOwner(workspace=workspace, situation=situation)
         runtime_content_authority = RuntimeContentReferenceAuthority()
         canonical_input_ingestor = CanonicalInputIngestor(state_owner=state_owner)
-        context_request_assembler = ContextRequestAssembler(state_owner=state_owner)
+        context_request_assembler = ContextRequestAssembler()
+        prior_task_context_projector = PriorTaskContextProjector(
+            runtime_content_authority=runtime_content_authority
+        )
+        context_composer: ContextComposer | None = None
+        if prior_task_context_enabled:
+            assert context_composition_policy is not None  # narrowed above
+            context_composer = ContextComposer(policy=context_composition_policy)
+        context_package_preparer = ContextPackagePreparer(
+            state_owner=state_owner,
+            context_request_assembler=context_request_assembler,
+            prior_task_context_projector=prior_task_context_projector,
+            context_composer=context_composer,
+            prior_task_context_enabled=prior_task_context_enabled,
+        )
+
+        prior_task_context_materializer = PriorTaskContextMaterializer(
+            runtime_content_authority=runtime_content_authority
+        )
+        input_materializer = PriorTaskReasoningInputMaterializer(
+            context_materializer=prior_task_context_materializer
+        )
 
         requirements = ModelCapabilityRequirements(
             required_capabilities=frozenset({ModelCapability.TEXT_GENERATION}),
@@ -116,13 +168,14 @@ async def open_direct_runtime(
         reasoning_executor = ModelReasoningExecutor(
             execution_engine=execution_engine,
             selection_request=selection_request,
+            input_materializer=input_materializer,
         )
         reasoning_engine = ReasoningEngine(executor=reasoning_executor)
 
         operation = DirectReasoningOperation(
             runtime_content_authority=runtime_content_authority,
             canonical_input_ingestor=canonical_input_ingestor,
-            context_request_assembler=context_request_assembler,
+            context_package_preparer=context_package_preparer,
             reasoning_engine=reasoning_engine,
         )
 

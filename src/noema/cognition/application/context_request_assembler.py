@@ -1,8 +1,7 @@
-"""Assemble a ContextRequest from one canonical cognitive-state observation."""
+"""Assemble a ContextRequest from one caller-supplied cognitive-state snapshot pair."""
 
 from datetime import timedelta
 
-from noema.cognition.application.cognitive_state_owner import CognitiveStateOwner
 from noema.cognition.domain.context import ContextStamp, ContextVersionMarker
 from noema.cognition.domain.context_composition import (
     ContextRequest,
@@ -12,42 +11,35 @@ from noema.cognition.domain.context_composition import (
     InstructionAuthority,
 )
 from noema.cognition.domain.modes import CognitiveMode
+from noema.cognition.domain.situation import SituationModel
+from noema.cognition.domain.workspace import CognitiveWorkspace
 
 
 class ContextRequestAssembler:
-    """Bridge the canonical runtime cognitive state into a ``ContextRequest``.
+    """Bridge an explicit canonical snapshot pair into a ``ContextRequest``.
 
-    ADR-0028 fixes that the workspace and situation versions carried by a
-    ``ContextStamp`` are observed from the canonical snapshots as one logical
-    event, before the ``ContextRequest`` that will contain the stamp is built.
-    This assembler binds one runtime-instance ``CognitiveStateOwner``, performs
-    exactly one ``current_snapshots()`` observation per assembly, derives the
-    two observed versions, applies ``ContextVersionMarker.UNMATERIALIZED`` for
-    the identity/goal/policy dimensions (no materialized versioned owner exists
-    for those under current accepted authority, ADR-0027), constructs the
-    ``ContextStamp``, and forwards every other ``ContextRequest`` field from the
-    explicit caller input.
+    ADR-0031 makes this assembler snapshot-parameterized: it performs zero
+    canonical-state observations of its own. Its caller (``ContextPackagePreparer``)
+    observes the canonical ``CognitiveWorkspace``/``SituationModel`` pair exactly
+    once per context preparation and supplies that exact pair here, so the
+    ``ContextStamp`` this assembler builds is guaranteed to reflect the same
+    observation any candidate projection sharing that preparation also used --
+    rather than risking two independently-observed, potentially divergent
+    snapshots (ADR-0028's coherence guarantee, realized by ADR-0031's
+    single-observation-per-preparation contract).
 
     It selects no context policy, composes no context, builds no
     ``ContextPackage`` or ``ReasoningRequest``, chooses no cognitive mode,
     strategy or budget, performs no I/O, and owns no canonical cognitive state.
     """
 
-    __slots__ = ("_state_owner",)
-
-    def __init__(
-        self,
-        *,
-        state_owner: CognitiveStateOwner,
-    ) -> None:
-        """Bind the runtime-instance owner this assembler observes."""
-        if not isinstance(state_owner, CognitiveStateOwner):
-            raise TypeError("state_owner must be a CognitiveStateOwner")
-        self._state_owner = state_owner
+    __slots__ = ()
 
     def assemble(
         self,
         *,
+        workspace: CognitiveWorkspace,
+        situation: SituationModel,
         role: str,
         task_ref: str,
         goal_ref: str | None,
@@ -60,16 +52,20 @@ class ContextRequestAssembler:
         max_age: timedelta | None,
         max_total_content_size: int,
     ) -> ContextRequest:
-        """Observe the canonical pair once and return a ``ContextRequest``.
+        """Build a ``ContextRequest`` from the exact caller-supplied snapshot pair.
 
-        The ``ContextStamp`` is built here from a single
-        ``CognitiveStateOwner.current_snapshots()`` observation; a caller cannot
-        supply it. Every other field is forwarded to ``ContextRequest``
-        unchanged; ``ContextStamp`` and ``ContextRequest`` own their own
-        validation, so an invalid caller value raises the corresponding domain
-        error unwrapped.
+        The ``ContextStamp`` is built from ``workspace.version`` and
+        ``situation.version`` exactly as supplied -- this assembler performs no
+        observation of its own and clones neither snapshot. Every other field
+        is forwarded to ``ContextRequest`` unchanged; ``ContextRequest`` owns
+        its own validation, so an invalid caller value raises the
+        corresponding domain error unwrapped.
         """
-        workspace, situation = self._state_owner.current_snapshots()
+        if not isinstance(workspace, CognitiveWorkspace):
+            raise TypeError("workspace must be a CognitiveWorkspace")
+        if not isinstance(situation, SituationModel):
+            raise TypeError("situation must be a SituationModel")
+
         context_stamp = ContextStamp(
             workspace_version=workspace.version,
             situation_version=situation.version,

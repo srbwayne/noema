@@ -8,8 +8,10 @@ import pytest
 
 from noema.cognition.application import (
     CanonicalInputIngestor,
+    ContextPackagePreparer,
     ContextRequestAssembler,
     DirectReasoningOperation,
+    PriorTaskContextProjector,
     ReasoningEngine,
     RuntimeContentReferenceAuthority,
     RuntimeContentReferenceConflictError,
@@ -228,6 +230,18 @@ def _completed_outcome(
     )
 
 
+def _preparer(*, owner: CognitiveStateOwner) -> ContextPackagePreparer:
+    """A disabled-activation ContextPackagePreparer, matching pre-integration behavior."""
+    authority = RuntimeContentReferenceAuthority()
+    return ContextPackagePreparer(
+        state_owner=owner,
+        context_request_assembler=ContextRequestAssembler(),
+        prior_task_context_projector=PriorTaskContextProjector(runtime_content_authority=authority),
+        context_composer=None,
+        prior_task_context_enabled=False,
+    )
+
+
 def _operation(
     *,
     owner: CognitiveStateOwner,
@@ -235,7 +249,7 @@ def _operation(
     authority: RuntimeContentReferenceAuthority | None = None,
 ) -> tuple[DirectReasoningOperation, "SpyReasoningExecutor"]:
     ingestor = CanonicalInputIngestor(state_owner=owner)
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     engine = ReasoningEngine(executor=executor)  # type: ignore[arg-type]
     return (
         DirectReasoningOperation(
@@ -243,7 +257,7 @@ def _operation(
             if authority is not None
             else RuntimeContentReferenceAuthority(),
             canonical_input_ingestor=ingestor,
-            context_request_assembler=assembler,
+            context_package_preparer=preparer,
             reasoning_engine=engine,
         ),
         executor,  # type: ignore[return-value]
@@ -257,7 +271,7 @@ def test_direct_reasoning_operation_has_exact_slots() -> None:
     assert DirectReasoningOperation.__slots__ == (
         "_runtime_content_authority",
         "_canonical_input_ingestor",
-        "_context_request_assembler",
+        "_context_package_preparer",
         "_reasoning_engine",
     )
 
@@ -272,14 +286,14 @@ def test_constructor_is_keyword_only() -> None:
     owner = _owner()
     authority = RuntimeContentReferenceAuthority()
     ingestor = CanonicalInputIngestor(state_owner=owner)
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError):
-        DirectReasoningOperation(authority, ingestor, assembler, engine)  # type: ignore[misc]
+        DirectReasoningOperation(authority, ingestor, preparer, engine)  # type: ignore[misc]
     DirectReasoningOperation(
         runtime_content_authority=authority,
         canonical_input_ingestor=ingestor,
-        context_request_assembler=assembler,
+        context_package_preparer=preparer,
         reasoning_engine=engine,
     )
 
@@ -289,7 +303,7 @@ def test_constructor_type_hints_are_exact() -> None:
     assert hints == {
         "runtime_content_authority": RuntimeContentReferenceAuthority,
         "canonical_input_ingestor": CanonicalInputIngestor,
-        "context_request_assembler": ContextRequestAssembler,
+        "context_package_preparer": ContextPackagePreparer,
         "reasoning_engine": ReasoningEngine,
         "return": type(None),
     }
@@ -298,13 +312,13 @@ def test_constructor_type_hints_are_exact() -> None:
 def test_constructor_rejects_invalid_runtime_content_authority() -> None:
     owner = _owner()
     ingestor = CanonicalInputIngestor(state_owner=owner)
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError, match="runtime_content_authority"):
         DirectReasoningOperation(
             runtime_content_authority=object(),  # type: ignore[arg-type]
             canonical_input_ingestor=ingestor,
-            context_request_assembler=assembler,
+            context_package_preparer=preparer,
             reasoning_engine=engine,
         )
 
@@ -312,27 +326,27 @@ def test_constructor_rejects_invalid_runtime_content_authority() -> None:
 def test_constructor_rejects_invalid_canonical_input_ingestor() -> None:
     owner = _owner()
     authority = RuntimeContentReferenceAuthority()
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
     with pytest.raises(TypeError, match="canonical_input_ingestor"):
         DirectReasoningOperation(
             runtime_content_authority=authority,
             canonical_input_ingestor=object(),  # type: ignore[arg-type]
-            context_request_assembler=assembler,
+            context_package_preparer=preparer,
             reasoning_engine=engine,
         )
 
 
-def test_constructor_rejects_invalid_context_request_assembler() -> None:
+def test_constructor_rejects_invalid_context_package_preparer() -> None:
     owner = _owner()
     authority = RuntimeContentReferenceAuthority()
     ingestor = CanonicalInputIngestor(state_owner=owner)
     engine = ReasoningEngine(executor=SpyReasoningExecutor(_completed_outcome()))
-    with pytest.raises(TypeError, match="context_request_assembler"):
+    with pytest.raises(TypeError, match="context_package_preparer"):
         DirectReasoningOperation(
             runtime_content_authority=authority,
             canonical_input_ingestor=ingestor,
-            context_request_assembler=object(),  # type: ignore[arg-type]
+            context_package_preparer=object(),  # type: ignore[arg-type]
             reasoning_engine=engine,
         )
 
@@ -341,12 +355,12 @@ def test_constructor_rejects_invalid_reasoning_engine() -> None:
     owner = _owner()
     authority = RuntimeContentReferenceAuthority()
     ingestor = CanonicalInputIngestor(state_owner=owner)
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     with pytest.raises(TypeError, match="reasoning_engine"):
         DirectReasoningOperation(
             runtime_content_authority=authority,
             canonical_input_ingestor=ingestor,
-            context_request_assembler=assembler,
+            context_package_preparer=preparer,
             reasoning_engine=object(),  # type: ignore[arg-type]
         )
 
@@ -374,6 +388,7 @@ def test_forbidden_operations_are_not_exposed() -> None:
         "resolve_content",
         "content_authority",
         "registered_content",
+        "prepare",
     ):
         assert not hasattr(DirectReasoningOperation, forbidden)
 
@@ -385,7 +400,7 @@ def test_execute_is_a_coroutine_function() -> None:
     assert inspect.iscoroutinefunction(DirectReasoningOperation.execute)
 
 
-# --- signature (unchanged by M0-16) -----------------------------------------
+# --- signature -----------------------------------------------
 
 
 def test_execute_has_exact_keyword_only_signature() -> None:
@@ -438,6 +453,7 @@ def test_forbidden_parameters_are_absent() -> None:
     for forbidden in (
         "context_stamp",
         "context_request",
+        "context_package",
         "reasoning_request",
         "strategy",
         "reasoning_executor",
@@ -494,7 +510,7 @@ async def test_happy_path_returns_exact_outcome() -> None:
     assert result is expected_outcome
 
 
-# --- canonical-version propagation (updated for M0-16 ingestion) -----------
+# --- canonical-version propagation ------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -515,13 +531,13 @@ async def test_canonical_versions_propagate_through_the_full_path() -> None:
     assert stamp.policy_version is ContextVersionMarker.UNMATERIALIZED
 
 
-# --- observation cardinality (M0-16: two observations per execute) ---------
+# --- observation cardinality (two observations per execute) ---------
 
 
 @pytest.mark.asyncio
 async def test_one_execute_call_causes_exactly_two_canonical_observations() -> None:
     # Call 1: CanonicalInputIngestor's transition-base observation.
-    # Call 2: ContextRequestAssembler's post-ingestion ContextStamp observation.
+    # Call 2: ContextPackagePreparer's single per-preparation observation.
     owner = _CountingStateOwner(workspace=_workspace(), situation=_situation())
     executor = SpyReasoningExecutor(_completed_outcome())
     operation, _ = _operation(owner=owner, executor=executor)
@@ -543,7 +559,7 @@ async def test_ingestion_replacement_occurs_between_the_two_observations() -> No
     assert owner.call_log == ["current_snapshots", "replace_situation", "current_snapshots"]
 
 
-# --- M0-16 task ingestion -----------------------------------------------------
+# --- task ingestion -----------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -551,13 +567,13 @@ async def test_ingest_task_is_called_exactly_once_with_exact_task_ref() -> None:
     owner = _owner()
     authority = RuntimeContentReferenceAuthority()
     ingestor = _SpyIngestor(state_owner=owner)
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     executor = SpyReasoningExecutor(_completed_outcome())
     engine = ReasoningEngine(executor=executor)
     operation = DirectReasoningOperation(
         runtime_content_authority=authority,
         canonical_input_ingestor=ingestor,
-        context_request_assembler=assembler,
+        context_package_preparer=preparer,
         reasoning_engine=engine,
     )
 
@@ -567,14 +583,14 @@ async def test_ingest_task_is_called_exactly_once_with_exact_task_ref() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingestion_occurs_before_context_request_assembly() -> None:
+async def test_ingestion_occurs_before_context_preparation() -> None:
     owner = _owner()
     executor = SpyReasoningExecutor(_completed_outcome())
     operation, _ = _operation(owner=owner, executor=executor)
 
     await operation.execute(**_execute_kwargs(task_ref="task:ordering"))  # type: ignore[arg-type]
 
-    # The ContextStamp observed by the assembler must already reflect the
+    # The ContextStamp observed by the preparer must already reflect the
     # ingestion that happened before it -- proving the ordering indirectly
     # through the resulting canonical version, not just call counts.
     stamp = executor.received_requests[0].context.request.context_stamp
@@ -627,7 +643,7 @@ async def test_problem_ref_remains_independent_of_task_ref() -> None:
     assert task_entry.content_ref != received.problem_ref
 
 
-# --- M0-18 runtime content registration --------------------------------------
+# --- runtime content registration --------------------------------------
 
 
 @pytest.mark.asyncio
@@ -654,13 +670,13 @@ async def test_registration_occurs_before_ingestion() -> None:
     owner = _owner()
     authority = _SpyContentAuthority(shared_events=events)
     ingestor = _SpyIngestor(state_owner=owner, shared_events=events)
-    assembler = ContextRequestAssembler(state_owner=owner)
+    preparer = _preparer(owner=owner)
     executor = SpyReasoningExecutor(_completed_outcome())
     engine = ReasoningEngine(executor=executor)
     operation = DirectReasoningOperation(
         runtime_content_authority=authority,
         canonical_input_ingestor=ingestor,
-        context_request_assembler=assembler,
+        context_package_preparer=preparer,
         reasoning_engine=engine,
     )
 
@@ -961,8 +977,8 @@ async def test_context_request_failure_does_not_cause_second_ingestion() -> None
     with pytest.raises(InvalidContextRequestError):
         await operation.execute(**_execute_kwargs(role=""))  # type: ignore[arg-type]
 
-    # Ingestion already committed (it runs before ContextRequest assembly);
-    # the later failure must not have triggered a compensating re-ingestion.
+    # Ingestion already committed (it runs before context preparation); the
+    # later failure must not have triggered a compensating re-ingestion.
     _, situation = owner.current_snapshots()
     assert len(situation.entries_of_kind(SituationEntryKind.TASK)) == 1
 
@@ -1047,7 +1063,7 @@ async def test_reasoning_execution_error_does_not_cause_second_ingestion() -> No
 
 
 @pytest.mark.asyncio
-async def test_ingestion_failure_propagates_and_skips_assembler_and_executor() -> None:
+async def test_ingestion_failure_propagates_and_skips_preparer_and_executor() -> None:
     from noema.cognition.domain.errors import InvalidSituationEntryError
 
     owner = _owner()
@@ -1080,7 +1096,7 @@ async def test_sequential_operation_reuse_calls_executor_twice() -> None:
     assert executor.received_requests[1].problem_ref == "problem:b"
 
 
-# --- canonical-state evolution (updated for M0-16 per-execute ingestion) ----
+# --- canonical-state evolution -----------------------------------------------
 
 
 @pytest.mark.asyncio
