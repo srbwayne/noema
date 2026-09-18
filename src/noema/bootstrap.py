@@ -14,6 +14,7 @@ from ollama import AsyncClient
 
 from noema.cognition.application import (
     CanonicalInputIngestor,
+    CognitiveBudgetAdmittingReasoningExecutor,
     CognitiveStateOwner,
     ContextPackagePreparer,
     ContextRequestAssembler,
@@ -165,12 +166,15 @@ async def open_direct_runtime(
         selector = ModelSelector()
         router = ModelRouter(selector=selector)
         execution_engine = ModelExecutionEngine(router=router, executor=ollama_executor)
-        reasoning_executor = ModelReasoningExecutor(
+        model_reasoning_executor = ModelReasoningExecutor(
             execution_engine=execution_engine,
             selection_request=selection_request,
             input_materializer=input_materializer,
         )
-        reasoning_engine = ReasoningEngine(executor=reasoning_executor)
+        budget_admitting_reasoning_executor = CognitiveBudgetAdmittingReasoningExecutor(
+            inner_executor=model_reasoning_executor,
+        )
+        reasoning_engine = ReasoningEngine(executor=budget_admitting_reasoning_executor)
 
         operation = DirectReasoningOperation(
             runtime_content_authority=runtime_content_authority,

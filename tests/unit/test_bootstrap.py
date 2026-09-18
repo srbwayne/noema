@@ -9,6 +9,7 @@ import noema.bootstrap as bootstrap
 from noema.bootstrap import open_direct_runtime
 from noema.cognition.application import (
     CanonicalInputIngestor,
+    CognitiveBudgetAdmittingReasoningExecutor,
     CognitiveStateOwner,
     ContextPackagePreparer,
     DirectReasoningOperation,
@@ -27,6 +28,7 @@ from noema.cognition.domain.context_composition import (
     ContextSensitivity,
     ContextTrustLevel,
 )
+from noema.cognition.domain.errors import CognitiveBudgetExhaustedError
 from noema.cognition.domain.modes import CognitiveMode
 from noema.cognition.domain.reasoning import (
     ReasoningOutcome,
@@ -105,7 +107,11 @@ def _execute_kwargs(**overrides: object) -> dict[str, object]:
         "budget": CognitiveBudget(
             max_time=timedelta(seconds=1),
             max_steps=1,
-            max_llm_calls=0,
+            # ADR-0032: canonical DIRECT operations require max_llm_calls >= 1
+            # to be admitted by CognitiveBudgetAdmittingReasoningExecutor; this
+            # default fixture exercises the real bootstrap graph end to end and
+            # must therefore be admitted.
+            max_llm_calls=1,
             max_tool_calls=0,
             max_cost=Decimal("0"),
             max_tokens=0,
@@ -530,7 +536,7 @@ async def test_runtime_content_authority_is_shared_by_registration_projector_and
         assert isinstance(projector, PriorTaskContextProjector)
         projector_authority = projector._runtime_content_authority  # noqa: SLF001
 
-        reasoning_executor = operation._reasoning_engine._executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
         input_materializer = reasoning_executor._input_materializer  # noqa: SLF001
         assert isinstance(input_materializer, PriorTaskReasoningInputMaterializer)
         context_materializer = input_materializer._context_materializer  # noqa: SLF001
@@ -549,11 +555,160 @@ async def test_reasoning_input_materializer_is_injected_when_disabled_too(
     monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
 
     async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
         assert isinstance(
             reasoning_executor._input_materializer,  # noqa: SLF001
             PriorTaskReasoningInputMaterializer,
         )
+
+
+# --- cognitive budget admission object graph (ADR-0032) -----------------------
+
+
+@pytest.mark.asyncio
+async def test_reasoning_engine_executor_is_the_budget_admitting_decorator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        outer_executor = operation._reasoning_engine._executor  # noqa: SLF001
+        assert isinstance(outer_executor, CognitiveBudgetAdmittingReasoningExecutor)
+
+        inner_executor = outer_executor._inner_executor  # noqa: SLF001
+        assert isinstance(inner_executor, ModelReasoningExecutor)
+
+        # No duplicate ModelReasoningExecutor / ReasoningEngine: exactly one
+        # of each, wired in the frozen order
+        # ModelReasoningExecutor -> CognitiveBudgetAdmittingReasoningExecutor
+        # -> ReasoningEngine.
+        assert isinstance(inner_executor._input_materializer, PriorTaskReasoningInputMaterializer)  # noqa: SLF001
+        assert inner_executor._execution_engine is not None  # noqa: SLF001
+        assert inner_executor._selection_request is not None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_max_llm_calls_zero_blocks_before_materialization_and_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    materialize_calls = 0
+    original_materialize = PriorTaskContextMaterializer.materialize
+
+    def _counting_materialize(self: PriorTaskContextMaterializer, **kwargs: object) -> str:
+        nonlocal materialize_calls
+        materialize_calls += 1
+        return original_materialize(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(PriorTaskContextMaterializer, "materialize", _counting_materialize)
+
+    zero_budget = CognitiveBudget(
+        max_time=timedelta(seconds=1),
+        max_steps=1,
+        max_llm_calls=0,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        with pytest.raises(CognitiveBudgetExhaustedError):
+            await operation.execute(
+                **_execute_kwargs(
+                    task_ref="task:denied",
+                    problem_statement="Should never reach the provider.",
+                    budget=zero_budget,
+                )
+            )  # type: ignore[arg-type]
+
+        # No provider call.
+        assert fake_client_class.created[0].generate_calls == []
+        # No materialization attempt either -- denial happens strictly
+        # before the ReasoningInputMaterializer port is ever invoked.
+        assert materialize_calls == 0
+
+        # Upstream application effects (registration + canonical ingestion)
+        # remain committed -- DirectReasoningOperation's existing no-rollback
+        # semantics are unaffected by a later budget denial.
+        authority = operation._runtime_content_authority  # noqa: SLF001
+        assert authority.resolve(content_ref="task:denied") == "Should never reach the provider."
+        state_owner = operation._context_package_preparer._state_owner  # noqa: SLF001
+        _, situation = state_owner.current_snapshots()
+        task_entries = situation.entries_of_kind(SituationEntryKind.TASK)
+        assert any(entry.content_ref == "task:denied" for entry in task_entries)
+
+
+@pytest.mark.asyncio
+async def test_max_llm_calls_one_succeeds_with_exactly_one_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    admitted_budget = CognitiveBudget(
+        max_time=timedelta(seconds=1),
+        max_steps=1,
+        max_llm_calls=1,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        result = await operation.execute(
+            **_execute_kwargs(
+                task_ref="task:admitted",
+                problem_statement="Determine an answer.",
+                budget=admitted_budget,
+            )
+        )  # type: ignore[arg-type]
+
+    assert isinstance(result, ReasoningOutcome)
+    assert result.conclusion == "the answer"
+    client = fake_client_class.created[0]
+    assert len(client.generate_calls) == 1
+    assert client.generate_calls[0]["prompt"] == "Determine an answer."
+
+
+@pytest.mark.asyncio
+async def test_same_runtime_two_operations_share_one_budget_object_and_each_admit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    shared_budget = CognitiveBudget(
+        max_time=timedelta(seconds=1),
+        max_steps=1,
+        max_llm_calls=1,
+        max_tool_calls=0,
+        max_cost=Decimal("0"),
+        max_tokens=0,
+        max_search_depth=0,
+    )
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        result_a = await operation.execute(
+            **_execute_kwargs(task_ref="task:a", problem_ref="problem:a", budget=shared_budget)
+        )  # type: ignore[arg-type]
+        result_b = await operation.execute(
+            **_execute_kwargs(task_ref="task:b", problem_ref="problem:b", budget=shared_budget)
+        )  # type: ignore[arg-type]
+
+    assert isinstance(result_a, ReasoningOutcome)
+    assert isinstance(result_b, ReasoningOutcome)
+    client = fake_client_class.created[0]
+    # Two total provider calls -- one per operation -- proving
+    # PER_REASONING_REQUEST scope: the exact same immutable budget object
+    # admits two independent operations, not just one shared allowance.
+    assert len(client.generate_calls) == 2
+    # The shared budget object itself was never mutated.
+    assert shared_budget.max_llm_calls == 1
 
 
 # --- selection-request / provider / client identity ---------------------------
@@ -570,7 +725,7 @@ async def test_selection_request_uses_exact_supplied_model_resource(
     async with open_direct_runtime(
         **_open_runtime_kwargs(model_resource=model_resource)
     ) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
         selection_request = reasoning_executor._selection_request  # noqa: SLF001
 
         assert selection_request.requirements.required_capabilities == frozenset(
@@ -591,7 +746,7 @@ async def test_provider_ref_is_derived_from_model_resource(
     async with open_direct_runtime(
         **_open_runtime_kwargs(model_resource=model_resource)
     ) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
         execution_engine = reasoning_executor._execution_engine  # noqa: SLF001
         ollama_executor = execution_engine._executor  # noqa: SLF001
 
@@ -606,7 +761,7 @@ async def test_ollama_executor_retains_the_exact_entered_client(
     monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
 
     async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
-        reasoning_executor = operation._reasoning_engine._executor  # noqa: SLF001
+        reasoning_executor = operation._reasoning_engine._executor._inner_executor  # noqa: SLF001
         execution_engine = reasoning_executor._execution_engine  # noqa: SLF001
         ollama_executor = execution_engine._executor  # noqa: SLF001
 
@@ -769,8 +924,8 @@ async def test_two_nested_runtimes_are_fully_independent(
             assert workspace_a.budget is shared_workspace_budget
             assert workspace_b.budget is shared_workspace_budget
 
-            reasoning_executor_a = operation_a._reasoning_engine._executor  # noqa: SLF001
-            reasoning_executor_b = operation_b._reasoning_engine._executor  # noqa: SLF001
+            reasoning_executor_a = operation_a._reasoning_engine._executor._inner_executor  # noqa: SLF001
+            reasoning_executor_b = operation_b._reasoning_engine._executor._inner_executor  # noqa: SLF001
             execution_engine_a = reasoning_executor_a._execution_engine  # noqa: SLF001
             execution_engine_b = reasoning_executor_b._execution_engine  # noqa: SLF001
             assert execution_engine_a is not execution_engine_b
