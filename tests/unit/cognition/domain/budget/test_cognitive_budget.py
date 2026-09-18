@@ -5,7 +5,12 @@ from decimal import Decimal
 import pytest
 
 from noema.cognition.domain.budget import CognitiveBudget
-from noema.cognition.domain.errors import InvalidCognitiveBudgetError
+from noema.cognition.domain.errors import (
+    CognitiveBudgetExhaustedError,
+    InvalidCognitiveBudgetError,
+)
+from noema.cognition.ports import ReasoningExecutionError
+from noema.shared.domain import DomainError
 
 
 def cognitive_budget(
@@ -169,3 +174,26 @@ def test_zero_resource_cognitive_budget_is_valid() -> None:
     assert budget.max_cost == Decimal("0")
     assert budget.max_tokens == 0
     assert budget.max_search_depth == 0
+
+
+# --- CognitiveBudgetExhaustedError (ADR-0032) --------------------------------
+
+
+def test_cognitive_budget_exhausted_error_is_a_domain_error() -> None:
+    assert issubclass(CognitiveBudgetExhaustedError, DomainError)
+
+
+def test_cognitive_budget_exhausted_error_is_distinct_from_invalid_budget_error() -> None:
+    assert CognitiveBudgetExhaustedError is not InvalidCognitiveBudgetError
+    assert not issubclass(CognitiveBudgetExhaustedError, InvalidCognitiveBudgetError)
+    assert not issubclass(InvalidCognitiveBudgetError, CognitiveBudgetExhaustedError)
+
+
+def test_cognitive_budget_exhausted_error_is_not_a_technical_execution_error() -> None:
+    assert not issubclass(CognitiveBudgetExhaustedError, ReasoningExecutionError)
+    assert not issubclass(ReasoningExecutionError, CognitiveBudgetExhaustedError)
+
+
+def test_cognitive_budget_exhausted_error_can_be_raised_and_caught() -> None:
+    with pytest.raises(CognitiveBudgetExhaustedError, match="denied"):
+        raise CognitiveBudgetExhaustedError("admission denied")

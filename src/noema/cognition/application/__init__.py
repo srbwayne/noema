@@ -1,6 +1,9 @@
 """Application services orchestrating cognition domain and port contracts."""
 
 from .canonical_input_ingestor import CanonicalInputIngestor
+from .cognitive_budget_admitting_reasoning_executor import (
+    CognitiveBudgetAdmittingReasoningExecutor,
+)
 from .cognitive_state_owner import (
     CognitiveStateOwner,
     InvalidCognitiveStateReplacementError,
@@ -26,6 +29,7 @@ from .runtime_content_reference_authority import (
 
 __all__ = [
     "CanonicalInputIngestor",
+    "CognitiveBudgetAdmittingReasoningExecutor",
     "CognitiveStateOwner",
     "ContextPackagePreparer",
     "ContextRequestAssembler",

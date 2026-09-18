@@ -6,6 +6,7 @@ from noema.cognition.domain.errors.attention_errors import (
     InvalidAttentionWeightsError,
 )
 from noema.cognition.domain.errors.cognitive_budget_errors import (
+    CognitiveBudgetExhaustedError,
     InvalidCognitiveBudgetError,
 )
 from noema.cognition.domain.errors.cognitive_mode_errors import (
@@ -79,6 +80,7 @@ from noema.cognition.domain.errors.workspace_errors import (
 
 __all__ = [
     "AmbiguousReasoningStrategyError",
+    "CognitiveBudgetExhaustedError",
     "ContextCompositionUnsatisfiedError",
     "CognitiveItemNotFoundError",
     "DuplicateCognitiveItemError",
