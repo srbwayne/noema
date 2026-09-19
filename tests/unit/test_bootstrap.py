@@ -7,7 +7,7 @@ from typing import get_type_hints
 import pytest
 
 import noema.bootstrap as bootstrap
-from noema.bootstrap import open_direct_runtime
+from noema.bootstrap import open_direct_runtime, open_strategy_aware_direct_runtime
 from noema.cognition.application import (
     CanonicalInputIngestor,
     CognitiveBudgetAdmittingReasoningExecutor,
@@ -19,8 +19,10 @@ from noema.cognition.application import (
     PriorTaskContextProjector,
     PriorTaskReasoningInputMaterializer,
     ReasoningEngine,
+    ReasoningStrategyAdmittingDirectOperation,
     RuntimeContentReferenceAuthority,
     RuntimeContentReferenceNotFoundError,
+    UnsupportedReasoningStrategyError,
 )
 from noema.cognition.domain.budget import CognitiveBudget
 from noema.cognition.domain.context import ContextVersionMarker
@@ -31,6 +33,7 @@ from noema.cognition.domain.context_composition import (
     ContextTrustLevel,
 )
 from noema.cognition.domain.errors import (
+    AmbiguousReasoningStrategyError,
     CognitiveBudgetExhaustedError,
     CognitiveBudgetTimeExceededError,
 )
@@ -39,6 +42,7 @@ from noema.cognition.domain.reasoning import (
     ReasoningOutcome,
     ReasoningRequest,
     ReasoningStrategy,
+    ReasoningStrategyDemand,
 )
 from noema.cognition.domain.situation import SituationEntryKind, SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
@@ -127,6 +131,22 @@ def _execute_kwargs(**overrides: object) -> dict[str, object]:
     return kwargs
 
 
+def _all_false_demand(**overrides: bool) -> ReasoningStrategyDemand:
+    fields = {
+        "requires_decomposition": False,
+        "requires_hypothesis_testing": False,
+        "requires_causal_reasoning": False,
+        "requires_comparison": False,
+        "requires_search": False,
+        "requires_counterfactual": False,
+        "requires_critique": False,
+        "requires_tool_assistance": False,
+        "requires_multi_model": False,
+    }
+    fields.update(overrides)
+    return ReasoningStrategyDemand(**fields)  # type: ignore[arg-type]
+
+
 class _FakeGenerateResponse:
     def __init__(self, text: str) -> None:
         self.response = text
@@ -188,8 +208,8 @@ def _make_fake_async_client_class(
 # --- module surface -----------------------------------------------------
 
 
-def test_module_exports_only_open_direct_runtime() -> None:
-    assert bootstrap.__all__ == ["open_direct_runtime"]
+def test_module_exports_only_open_direct_runtime_and_strategy_aware_variant() -> None:
+    assert bootstrap.__all__ == ["open_direct_runtime", "open_strategy_aware_direct_runtime"]
 
 
 def test_no_runtime_container_type_is_defined() -> None:
@@ -1426,3 +1446,187 @@ async def test_same_runtime_context_retains_canonical_state_across_operations(
 
     client = fake_client_class.created[0]
     assert len(client.generate_calls) == 2
+
+
+# --- strategy-aware direct runtime object graph (ADR-0034) --------------------
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_runtime_yields_the_admitting_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        assert isinstance(operation, ReasoningStrategyAdmittingDirectOperation)
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_runtime_wraps_a_real_direct_reasoning_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        inner = operation._direct_operation  # noqa: SLF001
+        assert isinstance(inner, DirectReasoningOperation)
+        assert isinstance(inner._reasoning_engine, ReasoningEngine)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_runtime_constructs_one_reasoning_strategy_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from noema.cognition.domain.reasoning import ReasoningStrategySelector
+
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        assert isinstance(operation._selector, ReasoningStrategySelector)  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_runtime_delegates_construction_no_second_provider_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves no duplicated graph/provider-client construction (ADR-0034).
+
+    Exactly one ``AsyncClient`` is constructed for one entered
+    ``open_strategy_aware_direct_runtime`` context -- proving it delegates to
+    ``open_direct_runtime`` rather than building a second, parallel runtime
+    graph.
+    """
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()):  # type: ignore[arg-type]
+        assert len(fake_client_class.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_runtime_provider_client_closes_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()):  # type: ignore[arg-type]
+        assert fake_client_class.created[0].aexit_count == 0
+
+    client = fake_client_class.created[0]
+    assert client.aenter_count == 1
+    assert client.aexit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_direct_runtime_is_unaffected_by_strategy_aware_variant_existing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy regression: open_direct_runtime remains fully independently usable."""
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        assert isinstance(operation, DirectReasoningOperation)
+        result = await operation.execute(**_execute_kwargs())  # type: ignore[arg-type]
+
+    assert isinstance(result, ReasoningOutcome)
+    assert len(fake_client_class.created[0].generate_calls) == 1
+
+
+# --- strategy-aware direct runtime vertical behavior (ADR-0034) ---------------
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_all_false_demand_admits_direct_and_executes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        result = await operation.execute(demand=_all_false_demand(), **_execute_kwargs())  # type: ignore[arg-type]
+
+    assert isinstance(result, ReasoningOutcome)
+    assert result.strategy is ReasoningStrategy.DIRECT
+    client = fake_client_class.created[0]
+    assert len(client.generate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_strategy_aware_specialized_demand_denies_with_zero_provider_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        with pytest.raises(UnsupportedReasoningStrategyError):
+            await operation.execute(
+                demand=_all_false_demand(requires_search=True), **_execute_kwargs()
+            )  # type: ignore[arg-type]
+
+        assert fake_client_class.created[0].generate_calls == []
+
+
+# --- strategy-aware direct runtime state-side-effect proof (ADR-0034) ---------
+
+
+@pytest.mark.asyncio
+async def test_specialized_denial_registers_no_content_and_ingests_no_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        inner = operation._direct_operation  # noqa: SLF001
+        authority = inner._runtime_content_authority  # noqa: SLF001
+        state_owner = inner._context_package_preparer._state_owner  # noqa: SLF001
+        _, situation_before = state_owner.current_snapshots()
+
+        with pytest.raises(UnsupportedReasoningStrategyError):
+            await operation.execute(
+                demand=_all_false_demand(requires_search=True),
+                **_execute_kwargs(task_ref="task:denied-strategy"),
+            )  # type: ignore[arg-type]
+
+        with pytest.raises(RuntimeContentReferenceNotFoundError):
+            authority.resolve(content_ref="task:denied-strategy")
+
+        _, situation_after = state_owner.current_snapshots()
+        assert situation_after.version == situation_before.version
+        assert situation_after.entries == situation_before.entries
+
+        assert fake_client_class.created[0].generate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_demand_registers_no_content_and_ingests_no_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client_class = _make_fake_async_client_class(generate_result="the answer")
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs()) as operation:  # type: ignore[arg-type]
+        inner = operation._direct_operation  # noqa: SLF001
+        authority = inner._runtime_content_authority  # noqa: SLF001
+        state_owner = inner._context_package_preparer._state_owner  # noqa: SLF001
+        _, situation_before = state_owner.current_snapshots()
+
+        with pytest.raises(AmbiguousReasoningStrategyError):
+            await operation.execute(
+                demand=_all_false_demand(requires_search=True, requires_critique=True),
+                **_execute_kwargs(task_ref="task:ambiguous"),
+            )  # type: ignore[arg-type]
+
+        with pytest.raises(RuntimeContentReferenceNotFoundError):
+            authority.resolve(content_ref="task:ambiguous")
+
+        _, situation_after = state_owner.current_snapshots()
+        assert situation_after.version == situation_before.version
+
+        assert fake_client_class.created[0].generate_calls == []

@@ -24,6 +24,10 @@ from .prior_task_context_materializer import (
 from .prior_task_context_projector import PriorTaskContextProjector
 from .prior_task_reasoning_input_materializer import PriorTaskReasoningInputMaterializer
 from .reasoning_engine import ReasoningEngine
+from .reasoning_strategy_admitting_direct_operation import (
+    ReasoningStrategyAdmittingDirectOperation,
+    UnsupportedReasoningStrategyError,
+)
 from .runtime_content_reference_authority import (
     RuntimeContentReferenceAuthority,
     RuntimeContentReferenceConflictError,
@@ -45,9 +49,11 @@ __all__ = [
     "PriorTaskContextProjector",
     "PriorTaskReasoningInputMaterializer",
     "ReasoningEngine",
+    "ReasoningStrategyAdmittingDirectOperation",
     "RuntimeContentReferenceAuthority",
     "RuntimeContentReferenceConflictError",
     "RuntimeContentReferenceNotFoundError",
     "UnsupportedPriorTaskContextSliceError",
+    "UnsupportedReasoningStrategyError",
     "assemble_direct_reasoning_request",
 ]

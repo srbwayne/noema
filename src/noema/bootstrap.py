@@ -24,9 +24,11 @@ from noema.cognition.application import (
     PriorTaskContextProjector,
     PriorTaskReasoningInputMaterializer,
     ReasoningEngine,
+    ReasoningStrategyAdmittingDirectOperation,
     RuntimeContentReferenceAuthority,
 )
 from noema.cognition.domain.context_composition import ContextComposer, ContextCompositionPolicy
+from noema.cognition.domain.reasoning import ReasoningStrategySelector
 from noema.cognition.domain.situation import SituationModel
 from noema.cognition.domain.workspace import CognitiveWorkspace, WorkspaceBudget
 from noema.cognition.infrastructure import ModelReasoningExecutor
@@ -40,7 +42,7 @@ from noema.model_router.domain import (
 )
 from noema.model_router.infrastructure import OllamaModelExecutor
 
-__all__ = ["open_direct_runtime"]
+__all__ = ["open_direct_runtime", "open_strategy_aware_direct_runtime"]
 
 
 @asynccontextmanager
@@ -188,3 +190,46 @@ async def open_direct_runtime(
         )
 
         yield operation
+
+
+@asynccontextmanager
+async def open_strategy_aware_direct_runtime(
+    *,
+    workspace_budget: WorkspaceBudget,
+    ollama_host: str,
+    model_resource: ModelResourceCapabilities,
+    prior_task_context_enabled: bool,
+    context_composition_policy: ContextCompositionPolicy | None,
+) -> AsyncIterator[ReasoningStrategyAdmittingDirectOperation]:
+    """Construct the same first-DIRECT runtime graph behind an explicit strategy-admission surface.
+
+    Takes the exact same already-resolved configuration as
+    ``open_direct_runtime`` and delegates to it entirely for runtime
+    construction and provider-client lifecycle: this function enters
+    ``open_direct_runtime`` itself, receives its exact yielded
+    ``DirectReasoningOperation`` by identity, and constructs one
+    ``ReasoningStrategySelector`` for this runtime. It builds no provider
+    client of its own, constructs no second copy of the runtime graph, and
+    owns none of the provider-client lifecycle -- ``open_direct_runtime``'s
+    own ``async with`` scope still owns opening and deterministically
+    closing the provider client exactly once, exactly as it already does for
+    every other caller.
+
+    The yielded ``ReasoningStrategyAdmittingDirectOperation`` is additive:
+    ``open_direct_runtime`` itself is completely unchanged by this function's
+    existence, remains independently usable exactly as before, and is not
+    called by any existing caller of it as a side effect of this function
+    being defined.
+    """
+    async with open_direct_runtime(
+        workspace_budget=workspace_budget,
+        ollama_host=ollama_host,
+        model_resource=model_resource,
+        prior_task_context_enabled=prior_task_context_enabled,
+        context_composition_policy=context_composition_policy,
+    ) as operation:
+        reasoning_strategy_selector = ReasoningStrategySelector()
+        yield ReasoningStrategyAdmittingDirectOperation(
+            selector=reasoning_strategy_selector,
+            direct_operation=operation,
+        )

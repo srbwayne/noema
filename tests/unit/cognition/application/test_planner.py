@@ -380,9 +380,11 @@ def test_planner_application_export() -> None:
         "PriorTaskContextProjector",
         "PriorTaskReasoningInputMaterializer",
         "ReasoningEngine",
+        "ReasoningStrategyAdmittingDirectOperation",
         "RuntimeContentReferenceAuthority",
         "RuntimeContentReferenceConflictError",
         "RuntimeContentReferenceNotFoundError",
         "UnsupportedPriorTaskContextSliceError",
+        "UnsupportedReasoningStrategyError",
         "assemble_direct_reasoning_request",
     ]
