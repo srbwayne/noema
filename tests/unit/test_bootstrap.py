@@ -541,6 +541,7 @@ async def test_disabled_runtime_constructs_no_context_composer(
         preparer = operation._context_package_preparer  # noqa: SLF001
         assert preparer._context_composer is None  # noqa: SLF001
         assert preparer._prior_task_context_enabled is False  # noqa: SLF001
+        assert preparer._context_relevance_authority is None  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -559,6 +560,27 @@ async def test_enabled_runtime_constructs_composer_from_the_exact_supplied_polic
         assert isinstance(composer, ContextComposer)
         assert composer.policy is policy
         assert preparer._prior_task_context_enabled is True  # noqa: SLF001
+        assert preparer._context_relevance_authority is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_task_context_enabled", [False, True])
+async def test_strategy_aware_runtime_binds_no_context_relevance_authority(
+    monkeypatch: pytest.MonkeyPatch, prior_task_context_enabled: bool
+) -> None:
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+    overrides: dict[str, object] = {}
+    if prior_task_context_enabled:
+        overrides = {
+            "prior_task_context_enabled": True,
+            "context_composition_policy": _composition_policy(),
+        }
+
+    async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs(**overrides)) as operation:  # type: ignore[arg-type]
+        preparer = operation._direct_operation._context_package_preparer  # noqa: SLF001
+        assert preparer._prior_task_context_enabled is prior_task_context_enabled  # noqa: SLF001
+        assert preparer._context_relevance_authority is None  # noqa: SLF001
 
 
 @pytest.mark.asyncio
