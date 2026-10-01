@@ -1,8 +1,11 @@
 """Prepare one coherent ContextPackage from a single canonical snapshot observation."""
 
+import math
+from dataclasses import replace
 from datetime import timedelta
 
 from noema.cognition.application.cognitive_state_owner import CognitiveStateOwner
+from noema.cognition.application.context_relevance_authority import ContextRelevanceAuthority
 from noema.cognition.application.context_request_assembler import ContextRequestAssembler
 from noema.cognition.application.prior_task_context_projector import PriorTaskContextProjector
 from noema.cognition.domain.context_composition import (
@@ -14,6 +17,18 @@ from noema.cognition.domain.context_composition import (
     InstructionAuthority,
 )
 from noema.cognition.domain.modes import CognitiveMode
+
+
+class InvalidContextRelevanceResultError(Exception):
+    """Raised when a relevance authority returns a result violating its contract.
+
+    A result must be a ``tuple`` with exactly one element per candidate, each
+    element either ``None`` or a finite ``float`` in ``[0.0, 1.0]``. A
+    violating result is rejected -- never coerced, clamped, truncated,
+    padded, reordered, or repaired. The message never exposes resolved
+    content payloads. Operational failures raised by the authority itself
+    propagate unchanged and are never wrapped in this error.
+    """
 
 
 class ContextPackagePreparer:
@@ -40,8 +55,13 @@ class ContextPackagePreparer:
 
     It performs no current-content registration, no canonical-TASK ingestion,
     no model-input materialization, no reasoning execution, no provider/model
-    call, no persistence, no relevance scoring, and selects no
-    ``CognitiveBudget``.
+    call, no persistence, and selects no ``CognitiveBudget``. It performs no
+    relevance scoring itself: when a ``ContextRelevanceAuthority`` is bound
+    (ADR-0041), it delegates relevance judgment of the projected candidates
+    to that authority exactly once, validates the complete result, and
+    reconstructs the candidates with the returned values before TASK
+    activation. With no authority bound, projected candidates pass through
+    unchanged.
     """
 
     __slots__ = (
@@ -50,6 +70,7 @@ class ContextPackagePreparer:
         "_prior_task_context_projector",
         "_context_composer",
         "_prior_task_context_enabled",
+        "_context_relevance_authority",
     )
 
     def __init__(
@@ -60,6 +81,7 @@ class ContextPackagePreparer:
         prior_task_context_projector: PriorTaskContextProjector,
         context_composer: ContextComposer | None,
         prior_task_context_enabled: bool,
+        context_relevance_authority: ContextRelevanceAuthority | None = None,
     ) -> None:
         """Bind this preparer's collaborators and freeze its activation policy.
 
@@ -67,6 +89,10 @@ class ContextPackagePreparer:
         consistent: enabled requires a bound ``ContextComposer``; disabled
         requires ``None``. An inconsistent pair raises ``TypeError`` rather
         than being silently repaired.
+
+        ``context_relevance_authority`` defaults to ``None``, meaning no
+        relevance authority is bound; a non-``None`` value must structurally
+        satisfy ``ContextRelevanceAuthority`` or ``TypeError`` is raised.
         """
         if not isinstance(state_owner, CognitiveStateOwner):
             raise TypeError("state_owner must be a CognitiveStateOwner")
@@ -86,12 +112,19 @@ class ContextPackagePreparer:
             raise TypeError(
                 "context_composer must be None when prior_task_context_enabled is False"
             )
+        if context_relevance_authority is not None and not isinstance(
+            context_relevance_authority, ContextRelevanceAuthority
+        ):
+            raise TypeError(
+                "context_relevance_authority must be a ContextRelevanceAuthority or None"
+            )
 
         self._state_owner = state_owner
         self._context_request_assembler = context_request_assembler
         self._prior_task_context_projector = prior_task_context_projector
         self._context_composer = context_composer
         self._prior_task_context_enabled = prior_task_context_enabled
+        self._context_relevance_authority = context_relevance_authority
 
     def prepare(
         self,
@@ -114,14 +147,18 @@ class ContextPackagePreparer:
         prior-TASK context activation is disabled, returns
         ``ContextPackage(request=context_request, slices=())`` directly,
         without calling the projector or the composer. When enabled, calls
-        the projector exactly once; if it returns no candidates, TASK is not
+        the projector exactly once; if it returns candidates and a relevance
+        authority is bound, calls ``judge`` exactly once, validates its
+        result (raising ``InvalidContextRelevanceResultError`` on a contract
+        violation), and reconstructs the candidates with the returned
+        relevance values; if it returns no candidates, TASK is not
         added to the required slice types and an empty package is returned
         without calling the composer; if it returns at least one candidate,
         TASK is appended to the required slice types (unless already
         present) and the bound ``ContextComposer`` is called exactly once,
         with its exact resulting ``ContextPackage`` returned unchanged. Any
-        error raised by the projector, the assembler, or the composer
-        propagates unchanged.
+        error raised by the projector, the relevance authority, the
+        assembler, or the composer propagates unchanged.
         """
         workspace, situation = self._state_owner.current_snapshots()
 
@@ -144,6 +181,16 @@ class ContextPackagePreparer:
             return ContextPackage(request=context_request, slices=())
 
         candidates = self._prior_task_context_projector.project(situation=situation)
+
+        if candidates and self._context_relevance_authority is not None:
+            relevances = self._context_relevance_authority.judge(
+                task_ref=task_ref, candidates=candidates
+            )
+            _validate_relevance_result(relevances, candidate_count=len(candidates))
+            candidates = tuple(
+                replace(candidate, relevance=relevance)
+                for candidate, relevance in zip(candidates, relevances, strict=True)
+            )
 
         effective_required_slice_types = required_slice_types
         if candidates and ContextSliceType.TASK not in required_slice_types:
@@ -170,3 +217,21 @@ class ContextPackagePreparer:
 
         assert self._context_composer is not None  # noqa: S101 -- guaranteed by __init__
         return self._context_composer.compose(request=context_request, candidates=candidates)
+
+
+def _validate_relevance_result(result: object, *, candidate_count: int) -> None:
+    """Reject any relevance result that violates the ADR-0041 result contract."""
+    if not isinstance(result, tuple):
+        raise InvalidContextRelevanceResultError("relevance result must be a tuple")
+    if len(result) != candidate_count:
+        raise InvalidContextRelevanceResultError(
+            f"relevance result must contain exactly {candidate_count} values, got {len(result)}"
+        )
+    for index, value in enumerate(result):
+        if value is None:
+            continue
+        if not isinstance(value, float) or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise InvalidContextRelevanceResultError(
+                f"relevance value at position {index} must be None or a finite float "
+                "between 0.0 and 1.0"
+            )

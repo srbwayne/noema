@@ -1,12 +1,17 @@
 import inspect
+import math
 from dataclasses import replace
+from datetime import timedelta
 from typing import get_type_hints
 
 import pytest
 
 from noema.cognition.application import (
     ContextPackagePreparer,
+    ContextRelevanceAuthority,
     ContextRequestAssembler,
+    InvalidContextRelevanceResultError,
+    NormalizedExactTaskContentRelevanceAuthority,
     PriorTaskContextProjector,
     RuntimeContentReferenceAuthority,
 )
@@ -662,6 +667,404 @@ def _context_request_stub() -> object:
     )
 
 
+# --- relevance authority seam (ADR-0041) ----------------------------------------
+
+
+class _SpyRelevanceAuthority:
+    """Structural ``ContextRelevanceAuthority`` fake returning a fixed result."""
+
+    def __init__(self, *, result: object = None, error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, tuple[ContextCandidate, ...]]] = []
+        self._result = result
+        self._error = error
+
+    def judge(
+        self, *, task_ref: str, candidates: tuple[ContextCandidate, ...]
+    ) -> tuple[float | None, ...]:
+        self.calls.append((task_ref, candidates))
+        if self._error is not None:
+            raise self._error
+        if self._result is None:
+            return tuple(None for _ in candidates)
+        return self._result  # type: ignore[return-value]
+
+
+class _FloatSubclass(float):
+    pass
+
+
+def _aged_candidate(*, content_ref: str, age: timedelta | None) -> ContextCandidate:
+    return ContextCandidate(
+        context_slice=_task_slice(content_ref=content_ref), relevance=None, age=age
+    )
+
+
+def _two_candidates() -> tuple[ContextCandidate, ...]:
+    return (
+        _aged_candidate(content_ref="task:prior:a", age=timedelta(seconds=5)),
+        _aged_candidate(content_ref="task:prior:b", age=None),
+    )
+
+
+def _relevance_preparer(
+    *,
+    candidates: tuple[ContextCandidate, ...],
+    relevance_authority: object,
+    enabled: bool = True,
+) -> tuple[ContextPackagePreparer, _SpyProjector, list[object]]:
+    content_authority = RuntimeContentReferenceAuthority()
+    projector = _SpyProjector(runtime_content_authority=content_authority, candidates=candidates)
+    composer, compose_calls = _composer_spy(
+        policy=_policy(),
+        result=ContextPackage(request=_context_request_stub(), slices=()),  # type: ignore[arg-type]
+    )
+    preparer = ContextPackagePreparer(
+        state_owner=_owner(),
+        context_request_assembler=ContextRequestAssembler(),
+        prior_task_context_projector=projector,
+        context_composer=composer if enabled else None,
+        prior_task_context_enabled=enabled,
+        context_relevance_authority=relevance_authority,  # type: ignore[arg-type]
+    )
+    return preparer, projector, compose_calls
+
+
+def _composed_candidates(compose_calls: list[object]) -> tuple[ContextCandidate, ...]:
+    assert len(compose_calls) == 1
+    _, candidates = compose_calls[0]  # type: ignore[misc]
+    return candidates  # type: ignore[no-any-return]
+
+
+def test_context_relevance_authority_is_a_keyword_only_parameter_defaulting_to_none() -> None:
+    parameter = inspect.signature(ContextPackagePreparer).parameters["context_relevance_authority"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is None
+
+
+def test_omitted_relevance_authority_preserves_existing_behavior() -> None:
+    candidates = _two_candidates()
+    content_authority = RuntimeContentReferenceAuthority()
+    projector = _SpyProjector(runtime_content_authority=content_authority, candidates=candidates)
+    composer, compose_calls = _composer_spy(
+        policy=_policy(),
+        result=ContextPackage(request=_context_request_stub(), slices=()),  # type: ignore[arg-type]
+    )
+    preparer = ContextPackagePreparer(
+        state_owner=_owner(),
+        context_request_assembler=ContextRequestAssembler(),
+        prior_task_context_projector=projector,
+        context_composer=composer,
+        prior_task_context_enabled=True,
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert preparer._context_relevance_authority is None  # noqa: SLF001
+    assert _composed_candidates(compose_calls) is candidates
+
+
+def test_explicit_none_relevance_authority_preserves_existing_behavior() -> None:
+    candidates = _two_candidates()
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=candidates, relevance_authority=None
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    composed = _composed_candidates(compose_calls)
+    assert composed is candidates
+    assert all(candidate.relevance is None for candidate in composed)
+
+
+def test_constructor_rejects_invalid_relevance_authority() -> None:
+    with pytest.raises(TypeError, match="context_relevance_authority"):
+        _relevance_preparer(candidates=(), relevance_authority=object())
+
+
+def test_constructor_accepts_structural_relevance_authority() -> None:
+    authority = _SpyRelevanceAuthority()
+    assert isinstance(authority, ContextRelevanceAuthority)
+
+    preparer, _, _ = _relevance_preparer(candidates=(), relevance_authority=authority)
+
+    assert preparer._context_relevance_authority is authority  # noqa: SLF001
+
+
+def test_constructor_accepts_relevance_authority_with_disabled_prior_task_context() -> None:
+    authority = _SpyRelevanceAuthority()
+    preparer, _, _ = _relevance_preparer(
+        candidates=(), relevance_authority=authority, enabled=False
+    )
+    assert preparer._context_relevance_authority is authority  # noqa: SLF001
+
+
+def test_disabled_path_never_invokes_bound_relevance_authority() -> None:
+    authority = _SpyRelevanceAuthority()
+    preparer, projector, compose_calls = _relevance_preparer(
+        candidates=_two_candidates(), relevance_authority=authority, enabled=False
+    )
+
+    result = preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert authority.calls == []
+    assert projector.project_calls == []
+    assert compose_calls == []
+    assert result.slices == ()
+
+
+def test_zero_candidates_skip_relevance_authority() -> None:
+    authority = _SpyRelevanceAuthority()
+    preparer, projector, compose_calls = _relevance_preparer(
+        candidates=(), relevance_authority=authority
+    )
+
+    result = preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert len(projector.project_calls) == 1
+    assert authority.calls == []
+    assert compose_calls == []
+    assert result.slices == ()
+    assert result.request.required_slice_types == ()
+
+
+def test_candidates_with_bound_authority_invoke_judge_exactly_once_with_exact_inputs() -> None:
+    candidates = _two_candidates()
+    authority = _SpyRelevanceAuthority()
+    preparer, _, _ = _relevance_preparer(candidates=candidates, relevance_authority=authority)
+
+    preparer.prepare(**_prepare_kwargs(task_ref="task:the-current-one"))  # type: ignore[arg-type]
+
+    assert len(authority.calls) == 1
+    task_ref, judged_candidates = authority.calls[0]
+    assert task_ref == "task:the-current-one"
+    assert judged_candidates is candidates
+
+
+def test_result_values_are_applied_positionally() -> None:
+    candidates = _two_candidates()
+    authority = _SpyRelevanceAuthority(result=(None, 0.75))
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=candidates, relevance_authority=authority
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    composed = _composed_candidates(compose_calls)
+    assert [candidate.relevance for candidate in composed] == [None, 0.75]
+    assert [candidate.context_slice.content_ref for candidate in composed] == [
+        "task:prior:a",
+        "task:prior:b",
+    ]
+
+
+def test_reconstruction_preserves_context_slice_and_age_without_mutating_originals() -> None:
+    candidates = _two_candidates()
+    originals = tuple(replace(candidate) for candidate in candidates)
+    authority = _SpyRelevanceAuthority(result=(1.0, 0.25))
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=candidates, relevance_authority=authority
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    composed = _composed_candidates(compose_calls)
+    assert composed is not candidates
+    assert len(composed) == len(candidates)
+    for original, reconstructed in zip(candidates, composed, strict=True):
+        assert reconstructed.context_slice is original.context_slice
+        assert reconstructed.age is original.age
+    assert candidates == originals
+    assert all(candidate.relevance is None for candidate in candidates)
+
+
+@pytest.mark.parametrize("value", [None, 0.0, 1.0, 0.5, _FloatSubclass(0.5)])
+def test_valid_relevance_values_are_accepted(value: float | None) -> None:
+    candidates = (_candidate(),)
+    authority = _SpyRelevanceAuthority(result=(value,))
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=candidates, relevance_authority=authority
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    composed = _composed_candidates(compose_calls)
+    assert composed[0].relevance is value
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        [1.0, 1.0],
+        (1.0,),
+        (1.0, 1.0, 1.0),
+        (1, None),
+        (True, None),
+        (math.nan, None),
+        (math.inf, None),
+        (-math.inf, None),
+        (-0.1, None),
+        (1.1, None),
+        (None, "1.0"),
+    ],
+    ids=[
+        "list-container",
+        "shorter",
+        "longer",
+        "int",
+        "bool",
+        "nan",
+        "positive-infinity",
+        "negative-infinity",
+        "negative",
+        "above-one",
+        "str",
+    ],
+)
+def test_invalid_relevance_result_is_rejected_before_reconstruction(
+    result: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from noema.cognition.application import context_package_preparer
+
+    replace_calls: list[object] = []
+
+    def _recording_replace(obj: object, /, **changes: object) -> object:
+        replace_calls.append(obj)
+        return replace(obj, **changes)  # type: ignore[type-var]
+
+    monkeypatch.setattr(context_package_preparer, "replace", _recording_replace)
+    candidates = _two_candidates()
+    authority = _SpyRelevanceAuthority(result=result)
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=candidates, relevance_authority=authority
+    )
+
+    with pytest.raises(InvalidContextRelevanceResultError):
+        preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert replace_calls == []
+    assert compose_calls == []
+    assert all(candidate.relevance is None for candidate in candidates)
+
+
+def test_invalid_result_error_does_not_expose_resolved_content() -> None:
+    content_authority = RuntimeContentReferenceAuthority()
+    content_authority.register(content_ref="task:current", payload="SECRET-TASK-PAYLOAD")
+
+    class _LeakyShapedAuthority:
+        def judge(
+            self, *, task_ref: str, candidates: tuple[ContextCandidate, ...]
+        ) -> tuple[float | None, ...]:
+            content_authority.resolve(content_ref=task_ref)
+            return (2.0,)
+
+    preparer, _, _ = _relevance_preparer(
+        candidates=(_candidate(),), relevance_authority=_LeakyShapedAuthority()
+    )
+
+    with pytest.raises(InvalidContextRelevanceResultError) as excinfo:
+        preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert "SECRET-TASK-PAYLOAD" not in str(excinfo.value)
+    assert "2.0" not in str(excinfo.value)
+
+
+def test_relevance_authority_operational_failure_propagates_unchanged() -> None:
+    error = RuntimeError("authority failed")
+    authority = _SpyRelevanceAuthority(error=error)
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=_two_candidates(), relevance_authority=authority
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert excinfo.value is error
+    assert not isinstance(excinfo.value, InvalidContextRelevanceResultError)
+    assert compose_calls == []
+
+
+@pytest.mark.parametrize("result", [(None, None), (1.0, 1.0), (0.0, 0.0)])
+def test_task_activation_depends_on_candidate_existence_not_relevance(
+    result: tuple[float | None, ...],
+) -> None:
+    authority = _SpyRelevanceAuthority(result=result)
+    preparer, _, compose_calls = _relevance_preparer(
+        candidates=_two_candidates(), relevance_authority=authority
+    )
+
+    preparer.prepare(**_prepare_kwargs(required_slice_types=()))  # type: ignore[arg-type]
+
+    request, _ = compose_calls[0]  # type: ignore[misc]
+    assert request.required_slice_types == (ContextSliceType.TASK,)  # type: ignore[attr-defined]
+
+
+def test_composer_receives_reconstructed_candidates_only_after_validation() -> None:
+    order: list[str] = []
+    candidates = _two_candidates()
+
+    class _OrderedAuthority:
+        def judge(
+            self, *, task_ref: str, candidates: tuple[ContextCandidate, ...]
+        ) -> tuple[float | None, ...]:
+            order.append("judge")
+            return (0.5, None)
+
+    class _OrderedComposer(ContextComposer):
+        def compose(self, *, request: object, candidates: object) -> ContextPackage:
+            order.append("compose")
+            assert [c.relevance for c in candidates] == [0.5, None]  # type: ignore[attr-defined]
+            return super().compose(request=request, candidates=candidates)  # type: ignore[arg-type]
+
+    content_authority = RuntimeContentReferenceAuthority()
+    preparer = ContextPackagePreparer(
+        state_owner=_owner(),
+        context_request_assembler=ContextRequestAssembler(),
+        prior_task_context_projector=_SpyProjector(
+            runtime_content_authority=content_authority, candidates=candidates
+        ),
+        context_composer=_OrderedComposer(policy=_policy()),
+        prior_task_context_enabled=True,
+        context_relevance_authority=_OrderedAuthority(),
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert order == ["judge", "compose"]
+
+
+def test_deterministic_realization_integrates_with_preparer() -> None:
+    situation = _situation(
+        SituationEntry(kind=SituationEntryKind.TASK, content_ref="task:prior"),
+        SituationEntry(kind=SituationEntryKind.TASK, content_ref="task:current"),
+    )
+    content_authority = RuntimeContentReferenceAuthority()
+    content_authority.register(content_ref="task:prior", payload="same question")
+    content_authority.register(content_ref="task:current", payload="same question")
+    captured: list[object] = []
+
+    class _CapturingComposer(ContextComposer):
+        def compose(self, *, request: object, candidates: object) -> ContextPackage:
+            captured.append(candidates)
+            return super().compose(request=request, candidates=candidates)  # type: ignore[arg-type]
+
+    preparer = ContextPackagePreparer(
+        state_owner=_owner(situation=situation),
+        context_request_assembler=ContextRequestAssembler(),
+        prior_task_context_projector=PriorTaskContextProjector(
+            runtime_content_authority=content_authority
+        ),
+        context_composer=_CapturingComposer(policy=_policy()),
+        prior_task_context_enabled=True,
+        context_relevance_authority=NormalizedExactTaskContentRelevanceAuthority(
+            runtime_content_authority=content_authority
+        ),
+    )
+
+    preparer.prepare(**_prepare_kwargs())  # type: ignore[arg-type]
+
+    assert [candidate.relevance for candidate in captured[0]] == [1.0]  # type: ignore[attr-defined]
+
+
 # --- export --------------------------------------------------------------------
 
 
@@ -669,3 +1072,11 @@ def test_application_package_exports_context_package_preparer() -> None:
     from noema.cognition import application
 
     assert "ContextPackagePreparer" in application.__all__
+
+
+def test_application_package_exports_relevance_seam() -> None:
+    from noema.cognition import application
+
+    assert "ContextRelevanceAuthority" in application.__all__
+    assert "InvalidContextRelevanceResultError" in application.__all__
+    assert "NormalizedExactTaskContentRelevanceAuthority" in application.__all__

@@ -11,10 +11,17 @@ from .cognitive_state_owner import (
     CognitiveStateOwner,
     InvalidCognitiveStateReplacementError,
 )
-from .context_package_preparer import ContextPackagePreparer
+from .context_package_preparer import (
+    ContextPackagePreparer,
+    InvalidContextRelevanceResultError,
+)
+from .context_relevance_authority import ContextRelevanceAuthority
 from .context_request_assembler import ContextRequestAssembler
 from .direct_reasoning_operation import DirectReasoningOperation
 from .direct_reasoning_request_assembler import assemble_direct_reasoning_request
+from .normalized_exact_task_content_relevance_authority import (
+    NormalizedExactTaskContentRelevanceAuthority,
+)
 from .planner import Planner
 from .prior_task_context_materializer import (
     PriorTaskContextMaterializationCoherenceError,
@@ -40,9 +47,12 @@ __all__ = [
     "CognitiveBudgetTimeBoundReasoningExecutor",
     "CognitiveStateOwner",
     "ContextPackagePreparer",
+    "ContextRelevanceAuthority",
     "ContextRequestAssembler",
     "DirectReasoningOperation",
     "InvalidCognitiveStateReplacementError",
+    "InvalidContextRelevanceResultError",
+    "NormalizedExactTaskContentRelevanceAuthority",
     "Planner",
     "PriorTaskContextMaterializationCoherenceError",
     "PriorTaskContextMaterializer",
