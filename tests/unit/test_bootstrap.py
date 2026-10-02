@@ -15,6 +15,7 @@ from noema.cognition.application import (
     CognitiveStateOwner,
     ContextPackagePreparer,
     DirectReasoningOperation,
+    NormalizedExactTaskContentRelevanceAuthority,
     PriorTaskContextMaterializer,
     PriorTaskContextProjector,
     PriorTaskReasoningInputMaterializer,
@@ -560,12 +561,17 @@ async def test_enabled_runtime_constructs_composer_from_the_exact_supplied_polic
         assert isinstance(composer, ContextComposer)
         assert composer.policy is policy
         assert preparer._prior_task_context_enabled is True  # noqa: SLF001
-        assert preparer._context_relevance_authority is None  # noqa: SLF001
+        relevance_authority = preparer._context_relevance_authority  # noqa: SLF001
+        assert isinstance(relevance_authority, NormalizedExactTaskContentRelevanceAuthority)
+        assert (
+            relevance_authority._runtime_content_authority  # noqa: SLF001
+            is operation._runtime_content_authority  # noqa: SLF001
+        )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("prior_task_context_enabled", [False, True])
-async def test_strategy_aware_runtime_binds_no_context_relevance_authority(
+async def test_strategy_aware_runtime_binds_relevance_authority_only_when_enabled(
     monkeypatch: pytest.MonkeyPatch, prior_task_context_enabled: bool
 ) -> None:
     fake_client_class = _make_fake_async_client_class()
@@ -578,9 +584,18 @@ async def test_strategy_aware_runtime_binds_no_context_relevance_authority(
         }
 
     async with open_strategy_aware_direct_runtime(**_open_runtime_kwargs(**overrides)) as operation:  # type: ignore[arg-type]
-        preparer = operation._direct_operation._context_package_preparer  # noqa: SLF001
+        direct_operation = operation._direct_operation  # noqa: SLF001
+        preparer = direct_operation._context_package_preparer  # noqa: SLF001
         assert preparer._prior_task_context_enabled is prior_task_context_enabled  # noqa: SLF001
-        assert preparer._context_relevance_authority is None  # noqa: SLF001
+        relevance_authority = preparer._context_relevance_authority  # noqa: SLF001
+        if not prior_task_context_enabled:
+            assert relevance_authority is None
+        else:
+            assert isinstance(relevance_authority, NormalizedExactTaskContentRelevanceAuthority)
+            assert (
+                relevance_authority._runtime_content_authority  # noqa: SLF001
+                is direct_operation._runtime_content_authority  # noqa: SLF001
+            )
 
 
 @pytest.mark.asyncio
@@ -608,8 +623,13 @@ async def test_runtime_content_authority_is_shared_by_registration_projector_and
         assert isinstance(context_materializer, PriorTaskContextMaterializer)
         materializer_authority = context_materializer._runtime_content_authority  # noqa: SLF001
 
+        relevance_authority = preparer._context_relevance_authority  # noqa: SLF001
+        assert isinstance(relevance_authority, NormalizedExactTaskContentRelevanceAuthority)
+        relevance_content_authority = relevance_authority._runtime_content_authority  # noqa: SLF001
+
         assert registration_authority is projector_authority
         assert registration_authority is materializer_authority
+        assert registration_authority is relevance_content_authority
 
 
 @pytest.mark.asyncio
@@ -1353,6 +1373,53 @@ async def test_enabled_runtime_sequential_operations_materialize_prior_task_end_
 
     assert isinstance(first_result, ReasoningOutcome)
     assert isinstance(second_result, ReasoningOutcome)
+
+
+@pytest.mark.asyncio
+async def test_enabled_runtime_bound_relevance_authority_enriches_exact_matching_prior_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove the production-bound relevance authority participates in composition.
+
+    Three sequential operations in one enabled runtime share the exact same
+    problem payload under distinct task refs. By the third operation both
+    prior TASK candidates resolve to an exact normalized match of the current
+    task: one satisfies required TASK coverage and the other, now judged
+    ``1.0`` instead of left unknown, is eligible for optional enrichment.
+    Without a bound relevance authority the surplus unknown-relevance
+    candidate would be excluded and only one prior payload would appear.
+    """
+    fake_client_class = _make_fake_async_client_class()
+    monkeypatch.setattr(bootstrap, "AsyncClient", fake_client_class)
+
+    repeated_problem = "Same question."
+
+    async with open_direct_runtime(
+        **_open_runtime_kwargs(
+            prior_task_context_enabled=True,
+            context_composition_policy=_composition_policy(),
+        )
+    ) as operation:  # type: ignore[arg-type]
+        for index in range(3):
+            await operation.execute(
+                **_execute_kwargs(
+                    task_ref=f"task:repeat-{index}",
+                    problem_ref=f"problem:repeat-{index}",
+                    problem_statement=repeated_problem,
+                    max_sensitivity=ContextSensitivity.SECRET,
+                    minimum_trust=ContextTrustLevel.UNVERIFIED,
+                )
+            )  # type: ignore[arg-type]
+
+    client = fake_client_class.created[0]
+    assert len(client.generate_calls) == 3
+    second_prompt = client.generate_calls[1]["prompt"]
+    third_prompt = client.generate_calls[2]["prompt"]
+    assert isinstance(second_prompt, str)
+    assert isinstance(third_prompt, str)
+
+    assert second_prompt.count('Payload: "Same question."') == 1
+    assert third_prompt.count('Payload: "Same question."') == 2
 
 
 # --- imports (no forbidden dependency leaks into this module) ----------------

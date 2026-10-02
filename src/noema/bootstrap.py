@@ -20,6 +20,7 @@ from noema.cognition.application import (
     ContextPackagePreparer,
     ContextRequestAssembler,
     DirectReasoningOperation,
+    NormalizedExactTaskContentRelevanceAuthority,
     PriorTaskContextMaterializer,
     PriorTaskContextProjector,
     PriorTaskReasoningInputMaterializer,
@@ -136,15 +137,20 @@ async def open_direct_runtime(
             runtime_content_authority=runtime_content_authority
         )
         context_composer: ContextComposer | None = None
+        context_relevance_authority: NormalizedExactTaskContentRelevanceAuthority | None = None
         if prior_task_context_enabled:
             assert context_composition_policy is not None  # narrowed above
             context_composer = ContextComposer(policy=context_composition_policy)
+            context_relevance_authority = NormalizedExactTaskContentRelevanceAuthority(
+                runtime_content_authority=runtime_content_authority
+            )
         context_package_preparer = ContextPackagePreparer(
             state_owner=state_owner,
             context_request_assembler=context_request_assembler,
             prior_task_context_projector=prior_task_context_projector,
             context_composer=context_composer,
             prior_task_context_enabled=prior_task_context_enabled,
+            context_relevance_authority=context_relevance_authority,
         )
 
         prior_task_context_materializer = PriorTaskContextMaterializer(
