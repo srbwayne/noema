@@ -49,9 +49,14 @@ uv run noema --config PATH "PROBLEM" ["PROBLEM" ...]
   problem's operation sequentially, in the exact order given, against the configured Ollama
   endpoint and model, then exits. Noema does not auto-discover or auto-pull models -- the Ollama
   endpoint and model named in the configuration must already be available.
-- Multiple problems share the same runtime instance and canonical state continuity, but each
-  model call still receives only its current problem statement; this does not add
-  conversational-history materialization -- no problem observes any earlier problem or response.
+- Multiple problems share the same runtime instance and canonical state continuity. With
+  prior-task context disabled (the default), each model call receives only its current problem
+  statement. With `[direct.context] prior_task_context_enabled = true`, a later problem's model
+  input also includes earlier problem statements from the same run as clearly labeled,
+  non-authoritative historical context; at least one earlier problem is always included, and
+  further earlier problems are added only when they exactly match the current problem and fit
+  within `max_slices` and the size limits. Model responses are never carried forward; this is not
+  conversation-history materialization.
 - On success, each problem's outcome is rendered in order, separated by exactly one blank line;
   a single problem's output is unchanged from a one-problem invocation. The first raised
   exception aborts the remaining problems immediately: no output is rendered for a failed
@@ -65,10 +70,12 @@ Run `uv run noema --help` for the exact CLI usage text.
 
 ### Configuration
 
-The configuration file is a TOML document with exactly five tables and 20 required keys. **No
-process configuration value has a repository default -- every key below is required**, and any
-missing key, unknown key, or unknown table is a configuration error. The values shown here are
-placeholders illustrating shape and type only, not recommended or default values:
+The configuration file is a TOML document with exactly five required tables and 20 required keys.
+The file may also contain an optional `[direct.context]` table that enables prior-task context (see
+below); when it is absent, prior-task context is disabled. **No process configuration value has a
+repository default -- every key below is required**, and any missing key, unknown key, or unknown
+table is a configuration error. The values shown here are placeholders illustrating shape and type
+only, not recommended or default values:
 
 ```toml
 [runtime.workspace]
@@ -104,6 +111,22 @@ max_search_depth = <integer>
 
 `mode`, `max_sensitivity`, `minimum_trust`, and `capabilities` accept only the exact contract
 values listed above (case-sensitive, no aliases). `capabilities` may be an empty list.
+
+### Optional prior-task context
+
+`[direct.context]` is optional. When it is absent, or when `prior_task_context_enabled = false`,
+prior-task context is disabled and each operation's model input is exactly its own problem
+statement. When enabled, both numeric keys are required:
+
+```toml
+[direct.context]
+prior_task_context_enabled = true   # exact boolean
+minimum_relevance = <float>         # 0.0 to 1.0
+max_slices = <integer>              # positive
+```
+
+When disabled, `minimum_relevance` and `max_slices` must not be supplied. Unknown keys in
+`[direct.context]` are a configuration error, like everywhere else.
 
 Run all checks:
 
