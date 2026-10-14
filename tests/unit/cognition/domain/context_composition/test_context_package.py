@@ -217,3 +217,11 @@ def test_context_package_is_immutable_and_structurally_equal() -> None:
     assert package == ContextPackage(request=request(), slices=(context_slice(),))
     with pytest.raises(FrozenInstanceError):
         package.slices = ()
+
+
+def test_context_package_accepts_slice_without_authority_when_authorities_are_allowed() -> None:
+    request_with_authorities = replace(
+        request(), allowed_authorities=(InstructionAuthority.SYSTEM_POLICY,)
+    )
+    context = context_slice(instruction_authority=None)
+    assert ContextPackage(request=request_with_authorities, slices=(context,)).slices == (context,)
